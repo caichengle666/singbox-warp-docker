@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  singbox-warp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SINGBOX_VERSION: ${SINGBOX_VERSION:-1.11.8}
+        WGCF_VERSION: ${WGCF_VERSION:-2.2.26}
+    container_name: singbox-warp
+    restart: unless-stopped
+    ports:
+      - "${HY2_PORT:-32443}:${HY2_PORT:-32443}/tcp"
+      - "${HY2_PORT:-32443}:${HY2_PORT:-32443}/udp"
+      - "${VLESS_PORT:-38443}:${VLESS_PORT:-38443}/tcp"
+    volumes:
+      - ./data:/var/lib/wgcf
+      - ./certs:/etc/sing-box/certs:ro
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - HY2_PORT=${HY2_PORT:-32443}
+      - VLESS_PORT=${VLESS_PORT:-38443}
