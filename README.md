@@ -31,6 +31,10 @@
   Copy `.env.example` to `.env` and set high ports (defaults: `HY2_PORT=32443`, `VLESS_PORT=38443`)
 - 启动时会自动写入 `config.json`，日志中的节点链接也会同步端口  
   Ports are injected into final `config.json` at startup, and printed node links use the same ports
+- 默认会自动生成一个 UUID，同时用于 `hy2 password` 和 `vless uuid`  
+  By default, one UUID is auto-generated and used for both `hy2 password` and `vless uuid`
+- 可通过 `.env` 覆盖：`AUTH_UUID`（统一）、`HY2_PASSWORD`、`VLESS_UUID`  
+  Override via `.env`: `AUTH_UUID` (shared), `HY2_PASSWORD`, `VLESS_UUID`
 
 4. 自动 TLS（推荐）  
    Automatic TLS (recommended)

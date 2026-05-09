@@ -11,6 +11,9 @@ TLS_DOMAIN_ENV="${TLS_DOMAIN:-}"
 ACME_EMAIL_ENV="${ACME_EMAIL:-}"
 TLS_ISSUE_RETRIES_ENV="${TLS_ISSUE_RETRIES:-3}"
 TLS_RENEW_INTERVAL_ENV="${TLS_RENEW_INTERVAL:-43200}"
+AUTH_UUID_ENV="${AUTH_UUID:-}"
+HY2_PASSWORD_ENV="${HY2_PASSWORD:-}"
+VLESS_UUID_ENV="${VLESS_UUID:-}"
 SINGBOX_PID=""
 
 ensure_tls_cert() {
@@ -143,6 +146,16 @@ fi
 
 cp "$SB_TEMPLATE" "$SB_CONFIG"
 
+if [ -z "$AUTH_UUID_ENV" ]; then
+  AUTH_UUID_ENV="$(cat /proc/sys/kernel/random/uuid)"
+fi
+if [ -z "$HY2_PASSWORD_ENV" ]; then
+  HY2_PASSWORD_ENV="$AUTH_UUID_ENV"
+fi
+if [ -z "$VLESS_UUID_ENV" ]; then
+  VLESS_UUID_ENV="$AUTH_UUID_ENV"
+fi
+
 sed -i \
   -e "s|__WARP_PRIVATE_KEY__|$WARP_PRIVATE_KEY|g" \
   -e "s|__WARP_ADDRESS_V4__|$WARP_ADDRESS_V4|g" \
@@ -152,6 +165,8 @@ sed -i \
   -e "s|__WARP_PEER_PORT__|$WARP_PEER_PORT|g" \
   -e "s|__HY2_PORT__|$HY2_PORT_ENV|g" \
   -e "s|__VLESS_PORT__|$VLESS_PORT_ENV|g" \
+  -e "s|__HY2_PASSWORD__|$HY2_PASSWORD_ENV|g" \
+  -e "s|__VLESS_UUID__|$VLESS_UUID_ENV|g" \
   "$SB_CONFIG"
 
 jq empty "$SB_CONFIG" >/dev/null

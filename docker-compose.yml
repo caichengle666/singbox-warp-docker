@@ -33,6 +33,9 @@ services:
     environment:
       - HY2_PORT=${HY2_PORT:-32443}
       - VLESS_PORT=${VLESS_PORT:-38443}
+      - AUTH_UUID=${AUTH_UUID:-}
+      - HY2_PASSWORD=${HY2_PASSWORD:-}
+      - VLESS_UUID=${VLESS_UUID:-}
       - AUTO_TLS=${AUTO_TLS:-false}
       - TLS_DOMAIN=${TLS_DOMAIN:-}
       - ACME_EMAIL=${ACME_EMAIL:-}
