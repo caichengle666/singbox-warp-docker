@@ -20,6 +20,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate sing-box template
+        run: |
+          set -euo pipefail
+          test -f config/sing-box.template.json
+          rendered="$(cat config/sing-box.template.json)"
+          rendered="${rendered//__HY2_PORT__/32443}"
+          rendered="${rendered//__VLESS_PORT__/38443}"
+          rendered="${rendered//__WARP_PEER_PORT__/2408}"
+          rendered="${rendered//__WARP_PEER_HOST__/engage.cloudflareclient.com}"
+          rendered="${rendered//__WARP_ADDRESS_V4__/172.16.0.2/32}"
+          rendered="${rendered//__WARP_ADDRESS_V6__/2606:4700:110:8765::2/128}"
+          rendered="${rendered//__WARP_PRIVATE_KEY__/dummy_private_key}"
+          rendered="${rendered//__WARP_PEER_PUBLIC_KEY__/dummy_peer_public_key}"
+          echo "$rendered" | jq empty
+
       - name: Resolve latest versions
         id: versions
         run: |
@@ -29,12 +44,6 @@ jobs:
           echo "singbox=$SINGBOX_VERSION" >> "$GITHUB_OUTPUT"
           echo "wgcf=$WGCF_VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -42,7 +51,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check if rebuild is needed
+        id: gate
+        run: |
+          set -euo pipefail
+          SB_TAG="sb-${{ steps.versions.outputs.singbox }}"
+          WGCF_TAG="wgcf-${{ steps.versions.outputs.wgcf }}"
+          NEED_BUILD=0
+          if ! docker manifest inspect "${IMAGE_NAME}:${SB_TAG}" >/dev/null 2>&1; then
+            NEED_BUILD=1
+          fi
+          if ! docker manifest inspect "${IMAGE_NAME}:${WGCF_TAG}" >/dev/null 2>&1; then
+            NEED_BUILD=1
+          fi
+          if [ "$NEED_BUILD" -eq 1 ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Rebuild required: missing ${SB_TAG} or ${WGCF_TAG}"
+          else
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "Skip build: both ${SB_TAG} and ${WGCF_TAG} already exist"
+          fi
+
+      - name: Set up QEMU
+        if: steps.gate.outputs.should_build == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.gate.outputs.should_build == 'true'
+        uses: docker/setup-buildx-action@v3
+
       - name: Docker metadata
+        if: steps.gate.outputs.should_build == 'true'
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -54,6 +93,7 @@ jobs:
             type=sha
 
       - name: Build and push
+        if: steps.gate.outputs.should_build == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -62,6 +102,17 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
           build-args: |
             SINGBOX_VERSION=${{ steps.versions.outputs.singbox }}
             WGCF_VERSION=${{ steps.versions.outputs.wgcf }}
+
+      - name: Cleanup old GHCR versions (keep latest 1)
+        if: steps.gate.outputs.should_build == 'true'
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: singbox-warp-docker
+          package-type: container
+          min-versions-to-keep: 1
+          token: ${{ secrets.GITHUB_TOKEN }}

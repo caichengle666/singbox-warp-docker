@@ -3,7 +3,7 @@ FROM alpine:3.20
 ARG SINGBOX_VERSION=1.11.8
 ARG WGCF_VERSION=2.2.26
 
-RUN apk add --no-cache ca-certificates curl tar bash jq tzdata
+RUN apk add --no-cache ca-certificates curl tar bash jq tzdata openssl socat
 
 RUN set -eux; \
     arch="$(uname -m)"; \
@@ -18,6 +18,7 @@ RUN set -eux; \
     chmod +x /usr/local/bin/sing-box; \
     curl -fsSL "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_linux_${wgcf_arch}" -o /usr/local/bin/wgcf; \
     chmod +x /usr/local/bin/wgcf; \
+    curl -fsSL https://get.acme.sh | sh -s email=none@example.com; \
     rm -rf /tmp/*
 
 WORKDIR /app
@@ -28,7 +29,7 @@ COPY config/wgcf-account.toml /etc/wgcf/account.toml
 
 RUN chmod +x /entrypoint.sh
 
-VOLUME ["/var/lib/wgcf", "/etc/sing-box/certs"]
+VOLUME ["/var/lib/wgcf", "/etc/sing-box/certs", "/var/lib/acme"]
 
 EXPOSE 8443/tcp 8443/udp
 

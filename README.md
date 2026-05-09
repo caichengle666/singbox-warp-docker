@@ -32,14 +32,36 @@
 - 启动时会自动写入 `config.json`，日志中的节点链接也会同步端口  
   Ports are injected into final `config.json` at startup, and printed node links use the same ports
 
-4. 本地构建并运行  
+4. 自动 TLS（推荐）  
+   Automatic TLS (recommended)
+- 在 `.env` 里设置：`AUTO_TLS=true`、`TLS_DOMAIN`、`CF_Token`（可选 `ACME_EMAIL`）  
+  Set in `.env`: `AUTO_TLS=true`, `TLS_DOMAIN`, `CF_Token` (optional `ACME_EMAIL`)
+- 容器启动时会通过 Cloudflare DNS API 自动申请/续期证书并写入 `./certs`  
+  On startup, container auto-issues/renews certs via Cloudflare DNS API and writes to `./certs`
+- 证书申请默认最多重试 3 次，可用 `TLS_ISSUE_RETRIES` 调整  
+  Certificate issue retries up to 3 times by default, configurable with `TLS_ISSUE_RETRIES`
+- 运行中会按 `TLS_RENEW_INTERVAL`（默认 43200 秒）定时续期检查  
+  Runtime renewal check runs every `TLS_RENEW_INTERVAL` (default 43200 seconds)
+- 证书变化后自动向 sing-box 发送 HUP 重载（热更新证书）  
+  On cert change, sends HUP to sing-box for hot certificate reload
+
+自动 TLS 前置条件 / Auto TLS prerequisites:
+
+- `TLS_DOMAIN` 必须已在 Cloudflare 托管，且 DNS 记录正确  
+  `TLS_DOMAIN` must be hosted on Cloudflare with correct DNS records
+- `CF_Token` 需要 Zone DNS 编辑权限（最小权限建议）  
+  `CF_Token` needs Zone DNS edit permission (least privilege recommended)
+- 首次签发失败时查看日志中的 `[tls]` 段落并重试  
+  If first issue fails, check `[tls]` logs and retry
+
+5. 本地构建并运行  
    Build and run locally
 
 ```bash
 docker compose up -d --build
 ```
 
-5. 查看日志  
+6. 查看日志  
    Check logs
 
 ```bash
@@ -52,6 +74,19 @@ docker compose logs -f
   `./data` is mounted to `/var/lib/wgcf` inside container
 - 这里保存 WARP 注册信息和生成的 profile  
   This stores WARP registration data and generated profile
+- `./acme` 挂载到 `/var/lib/acme`，用于 ACME 账户与续期状态  
+  `./acme` is mounted to `/var/lib/acme` for ACME account and renewal state
+- 如果启动时检测到续期更新，会在日志打印 `[tls] cert updated ...`  
+  If renewal updates certs at startup, logs show `[tls] cert updated ...`
+
+## 运行安全 Runtime Safety
+
+- 已在 `docker-compose.yml` 添加基础资源限制：`mem_limit=512m`、`pids_limit=256`  
+  Basic resource limits are set in `docker-compose.yml`: `mem_limit=512m`, `pids_limit=256`
+- 已添加健康检查（检查 `sing-box` 主进程）  
+  Healthcheck is enabled (checks `sing-box` main process)
+- `.env` 已加入 `.gitignore`，避免误提交敏感信息  
+  `.env` is ignored by git to avoid leaking sensitive values
 
 ## 文件结构 Files
 
@@ -146,8 +181,10 @@ Below is a ready-to-edit example (replace domain, password, UUID with your own):
 - `your-domain.com`
 - `your-hy2-password`
 - `aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`
-- 证书文件：`/etc/sing-box/certs/fullchain.pem`、`/etc/sing-box/certs/privkey.pem`  
-  Cert files: `/etc/sing-box/certs/fullchain.pem`, `/etc/sing-box/certs/privkey.pem`
+- 自动 TLS 模式：设置 `.env` 的 `AUTO_TLS=true`、`TLS_DOMAIN`、`CF_Token`  
+  Auto TLS mode: set `.env` values `AUTO_TLS=true`, `TLS_DOMAIN`, `CF_Token`
+- 手动证书模式：提供 `/etc/sing-box/certs/fullchain.pem` 和 `/etc/sing-box/certs/privkey.pem`  
+  Manual cert mode: provide `/etc/sing-box/certs/fullchain.pem` and `/etc/sing-box/certs/privkey.pem`
 
 ## GitHub 构建说明 GitHub Build Notes
 
