@@ -15,6 +15,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: read
       packages: write
     steps:
@@ -101,6 +102,7 @@ jobs:
           file: ./Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
+          no-cache: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
@@ -109,11 +111,38 @@ jobs:
             SINGBOX_VERSION=${{ steps.versions.outputs.singbox }}
             WGCF_VERSION=${{ steps.versions.outputs.wgcf }}
 
-      - name: Cleanup old GHCR versions (keep latest 1)
+      - name: Cleanup old GHCR versions (keep latest 3)
         if: steps.gate.outputs.should_build == 'true'
         uses: actions/delete-package-versions@v5
         with:
           package-name: singbox-warp-docker
           package-type: container
-          min-versions-to-keep: 1
+          min-versions-to-keep: 3
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup GitHub Actions caches
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const caches = await github.paginate(github.rest.actions.getActionsCacheList, {
+              owner,
+              repo,
+              per_page: 100
+            });
+            core.info(`Found ${caches.length} cache entries`);
+            for (const cache of caches) {
+              try {
+                await github.rest.actions.deleteActionsCacheById({
+                  owner,
+                  repo,
+                  cache_id: cache.id
+                });
+                core.info(`Deleted cache id=${cache.id} key=${cache.key}`);
+              } catch (e) {
+                core.warning(`Failed deleting cache id=${cache.id}: ${e.message}`);
+              }
+            }
