@@ -20,6 +20,16 @@ VLESS_UUID_ENV="${VLESS_UUID:-}"
 SINGBOX_PID=""
 STOP_REQUESTED="false"
 
+validate_positive_integer() {
+  local name="$1"
+  local value="$2"
+
+  if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[config] $name must be a positive integer, got: $value"
+    exit 1
+  fi
+}
+
 ensure_tls_cert() {
   mkdir -p "$(dirname "$TLS_CERT_PATH_ENV")" "$(dirname "$TLS_KEY_PATH_ENV")" /var/lib/acme
   export HOME=/var/lib/acme
@@ -126,8 +136,13 @@ start_singbox() {
 }
 
 validate_required_config() {
-  if [ -z "$TLS_DOMAIN_ENV" ]; then
-    echo "[config] TLS_DOMAIN is required"
+  validate_positive_integer "TLS_ISSUE_RETRIES" "$TLS_ISSUE_RETRIES_ENV"
+  validate_positive_integer "TLS_RENEW_INTERVAL" "$TLS_RENEW_INTERVAL_ENV"
+  validate_positive_integer "HY2_PORT" "$HY2_PORT_ENV"
+  validate_positive_integer "VLESS_PORT" "$VLESS_PORT_ENV"
+
+  if [ "$AUTO_TLS_ENV" = "true" ] && [ -z "$TLS_DOMAIN_ENV" ]; then
+    echo "[config] TLS_DOMAIN is required when AUTO_TLS=true"
     exit 1
   fi
 }

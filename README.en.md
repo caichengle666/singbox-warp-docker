@@ -28,13 +28,14 @@ docker compose logs -f
 
 You must provide these values yourself, otherwise the container will not serve traffic correctly:
 
-- `.env` `TLS_DOMAIN`
+- It is recommended to set `.env` `TLS_DOMAIN` for automatic TLS and node link generation
 
 The startup script injects `TLS_DOMAIN` into both inbound `tls.server_name` fields, so you usually do not need to edit the domain inside the template manually.
 
 Additional required values for automatic TLS mode:
 
 - `.env` `AUTO_TLS=true`
+- `.env` `TLS_DOMAIN`
 - `.env` `CF_Token=...`
 
 `CF_Token` is only used for Cloudflare DNS API certificate automation, not for WARP registration.

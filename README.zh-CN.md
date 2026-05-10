@@ -28,13 +28,14 @@ docker compose logs -f
 
 以下内容必须由你自己填写，否则容器无法正常对外提供服务：
 
-- `.env` 中的 `TLS_DOMAIN`
+- 建议填写 `.env` 中的 `TLS_DOMAIN`，用于自动 TLS 和节点链接生成
 
 启动脚本会自动把 `TLS_DOMAIN` 注入到两个入站的 `tls.server_name`，因此通常不需要再手改模板里的域名。
 
 自动 TLS 模式还必须填写：
 
 - `.env` `AUTO_TLS=true`
+- `.env` `TLS_DOMAIN`
 - `.env` `CF_Token=...`
 
 这里的 `CF_Token` 只用于 Cloudflare DNS API 自动签发证书，不用于 WARP 注册。
