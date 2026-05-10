@@ -44,6 +44,11 @@ Additional required files for manual certificate mode:
 - `./certs/fullchain.pem`
 - `./certs/privkey.pem`
 
+Optional existing WARP account reuse:
+
+- Put your existing account file at `./data/wgcf-account.toml` before first start
+- Do not bake WARP account files into the image or commit them into the repository
+
 ## Optional Values
 
 These can be changed if needed, but the service can still start with defaults:
@@ -59,7 +64,7 @@ These can be changed if needed, but the service can still start with defaults:
 - `.env` `TLS_ISSUE_RETRIES`, default `3`
 - `.env` `TLS_RENEW_INTERVAL`, default `43200`
 - `.env` `WARP_LICENSE_KEY`, optional, for WARP+ license binding
-- `config/wgcf-account.toml`, if you already have a WARP account file to reuse
+- `./data/wgcf-account.toml`, if you already have a WARP account file to reuse
 
 ## Auto-managed Values
 
@@ -78,7 +83,7 @@ Default behavior:
 
 - If `AUTH_UUID` / `HY2_PASSWORD` / `VLESS_UUID` are not provided, one UUID is generated at startup
 - The generated UUID is used for both `hy2 password` and `vless uuid`
-- If `config/wgcf-account.toml` is not provided, the container auto-registers WARP on first start
+- If `./data/wgcf-account.toml` is not provided, the container auto-registers WARP on first start
 - If `WARP_LICENSE_KEY` is provided, startup attempts to apply the WARP+ license and regenerate the profile
 
 ## Automatic TLS Prerequisites
@@ -91,7 +96,7 @@ Default behavior:
 
 - Standard WARP: no extra token is required; the container auto-registers on first start
 - WARP+: optionally provide `.env` `WARP_LICENSE_KEY`
-- `config/wgcf-account.toml` and `./data` persist the WARP account and generated profile
+- `./data/wgcf-account.toml` and the rest of `./data` persist the WARP account and generated profile
 - `CF_Token` is not a WARP token; it is only used for automatic TLS
 
 ## Persistent Directories
@@ -99,6 +104,11 @@ Default behavior:
 - `./data`: stores WARP registration and generated profile
 - `./acme`: stores ACME account and renewal state
 - `./certs`: stores TLS certificates
+
+Keep secrets out of the repository:
+
+- `wgcf-account.toml` should live under `./data`, which is already git-ignored
+- Do not place real WARP credentials under `config/`
 
 ## Runtime Safety
 

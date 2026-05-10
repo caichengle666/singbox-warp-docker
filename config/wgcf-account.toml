@@ -1,2 +1,4 @@
-# Optional: paste your existing wgcf-account.toml content here.
-# Leave as-is to let container auto-register at first start.
+# Do not store real WARP credentials under config/.
+# If you want to reuse an existing account, place it at:
+#   ./data/wgcf-account.toml
+# Leave that file absent to let the container auto-register at first start.

@@ -138,12 +138,6 @@ validate_required_config
 ensure_tls_cert
 
 if [ ! -f "$WGCF_DIR/wgcf-account.toml" ]; then
-  if [ -f /etc/wgcf/account.toml ] && [ -s /etc/wgcf/account.toml ]; then
-    cp /etc/wgcf/account.toml "$WGCF_DIR/wgcf-account.toml"
-  fi
-fi
-
-if [ ! -f "$WGCF_DIR/wgcf-account.toml" ]; then
   echo "[warp] no account found, registering new account"
   wgcf register --accept-tos
 else

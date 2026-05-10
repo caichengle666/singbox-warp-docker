@@ -37,13 +37,17 @@ docker compose logs -f
 - `.env` `AUTO_TLS=true`
 - `.env` `CF_Token=...`
 
-这里的 `CF_Token` 只用于 Cloudflare DNS API 自动签发证书，不用于 WARP 注册。  
-`CF_Token` here is only for Cloudflare DNS API certificate automation, not for WARP registration.
+这里的 `CF_Token` 只用于 Cloudflare DNS API 自动签发证书，不用于 WARP 注册。
 
 手动证书模式还必须准备：
 
 - `./certs/fullchain.pem`
 - `./certs/privkey.pem`
+
+如需复用现有 WARP 账号文件：
+
+- 请在首次启动前把账号文件放到 `./data/wgcf-account.toml`
+- 不要把真实 WARP 账号文件打进镜像，也不要提交进仓库
 
 ## 可选项
 
@@ -60,7 +64,7 @@ docker compose logs -f
 - `.env` `TLS_ISSUE_RETRIES`，默认 `3`
 - `.env` `TLS_RENEW_INTERVAL`，默认 `43200`
 - `.env` `WARP_LICENSE_KEY`，可选，用于绑定 WARP+ 许可证
-- `config/wgcf-account.toml`，如果你已有 WARP 账户文件，可直接复用
+- `./data/wgcf-account.toml`，如果你已有 WARP 账户文件，可直接复用
 
 ## 自动生成或不要手改
 
@@ -79,7 +83,7 @@ docker compose logs -f
 
 - 如果没有填写 `AUTH_UUID` / `HY2_PASSWORD` / `VLESS_UUID`，启动时会自动生成一个 UUID
 - 默认自动生成的 UUID 会同时用于 `hy2 password` 和 `vless uuid`
-- 如果没有提供 `config/wgcf-account.toml`，容器首次启动会自动注册 WARP
+- 如果没有提供 `./data/wgcf-account.toml`，容器首次启动会自动注册 WARP
 - 如果填写了 `WARP_LICENSE_KEY`，启动时会自动尝试更新到对应的 WARP+ 许可证并重建 profile
 
 ## 自动 TLS 前置条件
@@ -92,7 +96,7 @@ docker compose logs -f
 
 - 普通 WARP：不需要额外 token，容器首次启动时会自动注册
 - WARP+：可选填写 `.env` 中的 `WARP_LICENSE_KEY`
-- `config/wgcf-account.toml` 和 `./data` 目录用于持久化 WARP 账户与 profile
+- `./data/wgcf-account.toml` 以及 `./data` 目录其余内容用于持久化 WARP 账户与 profile
 - `CF_Token` 不是 WARP token，它只服务于自动 TLS
 
 ## 持久化目录
@@ -100,6 +104,11 @@ docker compose logs -f
 - `./data`：保存 WARP 注册信息和生成的 profile
 - `./acme`：保存 ACME 账户和续期状态
 - `./certs`：保存 TLS 证书
+
+凭据放置建议：
+
+- `wgcf-account.toml` 应放在已被 git 忽略的 `./data` 目录下
+- 不要把真实 WARP 凭据放进 `config/` 目录
 
 ## 运行安全
 

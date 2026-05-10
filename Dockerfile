@@ -25,12 +25,11 @@ WORKDIR /app
 
 COPY entrypoint.sh /entrypoint.sh
 COPY config/sing-box.template.json /etc/sing-box/template.json
-COPY config/wgcf-account.toml /etc/wgcf/account.toml
 
 RUN chmod +x /entrypoint.sh
 
 VOLUME ["/var/lib/wgcf", "/etc/sing-box/certs", "/var/lib/acme"]
 
-EXPOSE 8443/tcp 8443/udp
+EXPOSE 32443/tcp 32443/udp 38443/tcp
 
 ENTRYPOINT ["/entrypoint.sh"]
