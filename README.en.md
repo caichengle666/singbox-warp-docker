@@ -1,0 +1,211 @@
+# singbox-warp-docker
+
+A Docker-based `sing-box` image template with:
+
+- `HY2` inbound
+- `VLESS` inbound
+- Cloudflare WARP outbound
+- Optional automatic TLS via Cloudflare DNS API
+- GitHub Actions multi-architecture image builds
+
+## Quick Start
+
+1. Copy `.env.example` to `.env`
+2. Fill values based on the `Required / Optional / Auto-managed` sections below
+3. Run:
+
+```bash
+docker compose up -d --build
+```
+
+4. Check logs and generated node links:
+
+```bash
+docker compose logs -f
+```
+
+## Required Values
+
+You must provide these values yourself, otherwise the container will not serve traffic correctly:
+
+- `.env` `TLS_DOMAIN`
+
+The startup script injects `TLS_DOMAIN` into both inbound `tls.server_name` fields, so you usually do not need to edit the domain inside the template manually.
+
+Additional required values for automatic TLS mode:
+
+- `.env` `AUTO_TLS=true`
+- `.env` `CF_Token=...`
+
+`CF_Token` is only used for Cloudflare DNS API certificate automation, not for WARP registration.
+
+Additional required files for manual certificate mode:
+
+- `./certs/fullchain.pem`
+- `./certs/privkey.pem`
+
+## Optional Values
+
+These can be changed if needed, but the service can still start with defaults:
+
+- `.env` `HY2_PORT`, default `32443`
+- `.env` `VLESS_PORT`, default `38443`
+- `.env` `AUTH_UUID`, shared value for `hy2 password` and `vless uuid`
+- `.env` `HY2_PASSWORD`, override only `hy2 password`
+- `.env` `VLESS_UUID`, override only `vless uuid`
+- `.env` `ACME_EMAIL`
+- `.env` `TLS_CERT_PATH`, default `/etc/sing-box/certs/fullchain.pem`
+- `.env` `TLS_KEY_PATH`, default `/etc/sing-box/certs/privkey.pem`
+- `.env` `TLS_ISSUE_RETRIES`, default `3`
+- `.env` `TLS_RENEW_INTERVAL`, default `43200`
+- `.env` `WARP_LICENSE_KEY`, optional, for WARP+ license binding
+- `config/wgcf-account.toml`, if you already have a WARP account file to reuse
+
+## Auto-managed Values
+
+These values are generated or rendered by the startup script and usually should not be edited manually:
+
+- All `__WARP_*__` placeholders in `config/sing-box.template.json`
+- `__HY2_PORT__`
+- `__VLESS_PORT__`
+- `__HY2_PASSWORD__`
+- `__VLESS_UUID__`
+- `__TLS_DOMAIN__`
+- `__TLS_CERT_PATH__`
+- `__TLS_KEY_PATH__`
+
+Default behavior:
+
+- If `AUTH_UUID` / `HY2_PASSWORD` / `VLESS_UUID` are not provided, one UUID is generated at startup
+- The generated UUID is used for both `hy2 password` and `vless uuid`
+- If `config/wgcf-account.toml` is not provided, the container auto-registers WARP on first start
+- If `WARP_LICENSE_KEY` is provided, startup attempts to apply the WARP+ license and regenerate the profile
+
+## Automatic TLS Prerequisites
+
+- `TLS_DOMAIN` must be hosted on Cloudflare with correct DNS records
+- `CF_Token` needs Zone DNS edit permission
+- If first issue fails, check log lines containing `[tls]`
+
+## WARP Credential Notes
+
+- Standard WARP: no extra token is required; the container auto-registers on first start
+- WARP+: optionally provide `.env` `WARP_LICENSE_KEY`
+- `config/wgcf-account.toml` and `./data` persist the WARP account and generated profile
+- `CF_Token` is not a WARP token; it is only used for automatic TLS
+
+## Persistent Directories
+
+- `./data`: stores WARP registration and generated profile
+- `./acme`: stores ACME account and renewal state
+- `./certs`: stores TLS certificates
+
+## Runtime Safety
+
+- Basic resource limits are set in `docker-compose.yml`: `mem_limit=512m`, `pids_limit=256`
+- Healthcheck is enabled for the `sing-box` main process
+- `.env` is ignored by git
+- The main service is `sing-box`; certificate renewal is handled by a lightweight shell loop with signal forwarding and graceful shutdown
+
+## Template Notes
+
+File used: `config/sing-box.template.json`
+
+This is a template, not the final runtime config. On startup the script injects:
+
+- ports
+- `hy2 password`
+- `vless uuid`
+- `tls.server_name`
+- certificate paths
+- WARP outbound parameters
+
+In most cases you mainly need to care about:
+
+- whether the template structure matches your protocol needs
+- whether you want additional custom route rules
+
+Template example:
+
+```json
+{
+  "log": {
+    "level": "info"
+  },
+  "inbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "hy2-in",
+      "listen": "::",
+      "listen_port": __HY2_PORT__,
+      "users": [
+        {
+          "password": "__HY2_PASSWORD__"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "__TLS_DOMAIN__",
+        "certificate_path": "__TLS_CERT_PATH__",
+        "key_path": "__TLS_KEY_PATH__"
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "::",
+      "listen_port": __VLESS_PORT__,
+      "users": [
+        {
+          "uuid": "__VLESS_UUID__"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "__TLS_DOMAIN__",
+        "certificate_path": "__TLS_CERT_PATH__",
+        "key_path": "__TLS_KEY_PATH__"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "wireguard",
+      "tag": "warp",
+      "server": "__WARP_PEER_HOST__",
+      "server_port": __WARP_PEER_PORT__,
+      "local_address": [
+        "__WARP_ADDRESS_V4__",
+        "__WARP_ADDRESS_V6__"
+      ],
+      "private_key": "__WARP_PRIVATE_KEY__",
+      "peer_public_key": "__WARP_PEER_PUBLIC_KEY__",
+      "reserved": [0, 0, 0],
+      "mtu": 1280
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "block"
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "final": "warp"
+  }
+}
+```
+
+## GitHub Build Notes
+
+- The workflow checks versions on `push`, manual trigger, and scheduled runs
+- It only builds when `sing-box` or `wgcf` versions actually change
+- Images are pushed to `ghcr.io/<owner>/singbox-warp-docker`
+
+## Security Notes
+
+- Do not commit private keys, certificates, or `.env` into the repository
+- When using automatic TLS, keep `CF_Token` scoped to minimum required permissions

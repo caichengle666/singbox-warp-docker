@@ -15,9 +15,9 @@
       ],
       "tls": {
         "enabled": true,
-        "server_name": "example.com",
-        "certificate_path": "/etc/sing-box/certs/fullchain.pem",
-        "key_path": "/etc/sing-box/certs/privkey.pem"
+        "server_name": "__TLS_DOMAIN__",
+        "certificate_path": "__TLS_CERT_PATH__",
+        "key_path": "__TLS_KEY_PATH__"
       }
     },
     {
@@ -32,9 +32,9 @@
       ],
       "tls": {
         "enabled": true,
-        "server_name": "example.com",
-        "certificate_path": "/etc/sing-box/certs/fullchain.pem",
-        "key_path": "/etc/sing-box/certs/privkey.pem"
+        "server_name": "__TLS_DOMAIN__",
+        "certificate_path": "__TLS_CERT_PATH__",
+        "key_path": "__TLS_KEY_PATH__"
       }
     }
   ],

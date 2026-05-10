@@ -11,13 +11,17 @@ TLS_DOMAIN_ENV="${TLS_DOMAIN:-}"
 ACME_EMAIL_ENV="${ACME_EMAIL:-}"
 TLS_ISSUE_RETRIES_ENV="${TLS_ISSUE_RETRIES:-3}"
 TLS_RENEW_INTERVAL_ENV="${TLS_RENEW_INTERVAL:-43200}"
+TLS_CERT_PATH_ENV="${TLS_CERT_PATH:-/etc/sing-box/certs/fullchain.pem}"
+TLS_KEY_PATH_ENV="${TLS_KEY_PATH:-/etc/sing-box/certs/privkey.pem}"
+WARP_LICENSE_KEY_ENV="${WARP_LICENSE_KEY:-}"
 AUTH_UUID_ENV="${AUTH_UUID:-}"
 HY2_PASSWORD_ENV="${HY2_PASSWORD:-}"
 VLESS_UUID_ENV="${VLESS_UUID:-}"
 SINGBOX_PID=""
+STOP_REQUESTED="false"
 
 ensure_tls_cert() {
-  mkdir -p /etc/sing-box/certs /var/lib/acme
+  mkdir -p "$(dirname "$TLS_CERT_PATH_ENV")" "$(dirname "$TLS_KEY_PATH_ENV")" /var/lib/acme
   export HOME=/var/lib/acme
   export LE_CONFIG_HOME=/var/lib/acme/.acme.sh
   export CF_Token="${CF_Token:-}"
@@ -43,7 +47,7 @@ ensure_tls_cert() {
     /root/.acme.sh/acme.sh --register-account -m "$ACME_EMAIL_ENV" --server letsencrypt >/dev/null 2>&1 || true
   fi
 
-  if [ ! -s "/etc/sing-box/certs/fullchain.pem" ] || [ ! -s "/etc/sing-box/certs/privkey.pem" ]; then
+  if [ ! -s "$TLS_CERT_PATH_ENV" ] || [ ! -s "$TLS_KEY_PATH_ENV" ]; then
     echo "[tls] issuing cert for $TLS_DOMAIN_ENV"
     i=1
     while [ "$i" -le "$TLS_ISSUE_RETRIES_ENV" ]; do
@@ -59,16 +63,16 @@ ensure_tls_cert() {
       i=$((i + 1))
     done
     /root/.acme.sh/acme.sh --install-cert -d "$TLS_DOMAIN_ENV" --ecc \
-      --fullchain-file /etc/sing-box/certs/fullchain.pem \
-      --key-file /etc/sing-box/certs/privkey.pem
+      --fullchain-file "$TLS_CERT_PATH_ENV" \
+      --key-file "$TLS_KEY_PATH_ENV"
   else
     echo "[tls] existing cert found, checking renewal"
-    before_sum="$(sha256sum /etc/sing-box/certs/fullchain.pem /etc/sing-box/certs/privkey.pem 2>/dev/null | sha256sum | awk '{print $1}')"
+    before_sum="$(sha256sum "$TLS_CERT_PATH_ENV" "$TLS_KEY_PATH_ENV" 2>/dev/null | sha256sum | awk '{print $1}')"
     /root/.acme.sh/acme.sh --renew -d "$TLS_DOMAIN_ENV" --ecc --server letsencrypt || true
     /root/.acme.sh/acme.sh --install-cert -d "$TLS_DOMAIN_ENV" --ecc \
-      --fullchain-file /etc/sing-box/certs/fullchain.pem \
-      --key-file /etc/sing-box/certs/privkey.pem
-    after_sum="$(sha256sum /etc/sing-box/certs/fullchain.pem /etc/sing-box/certs/privkey.pem 2>/dev/null | sha256sum | awk '{print $1}')"
+      --fullchain-file "$TLS_CERT_PATH_ENV" \
+      --key-file "$TLS_KEY_PATH_ENV"
+    after_sum="$(sha256sum "$TLS_CERT_PATH_ENV" "$TLS_KEY_PATH_ENV" 2>/dev/null | sha256sum | awk '{print $1}')"
     if [ "$before_sum" != "$after_sum" ]; then
       echo "[tls] cert updated during startup renewal check"
     fi
@@ -80,18 +84,18 @@ renew_tls_cert_if_needed() {
     return 0
   fi
 
-  if [ ! -s "/etc/sing-box/certs/fullchain.pem" ] || [ ! -s "/etc/sing-box/certs/privkey.pem" ]; then
+  if [ ! -s "$TLS_CERT_PATH_ENV" ] || [ ! -s "$TLS_KEY_PATH_ENV" ]; then
     echo "[tls] cert files missing, running full ensure"
     ensure_tls_cert
     return 0
   fi
 
-  before_sum="$(sha256sum /etc/sing-box/certs/fullchain.pem /etc/sing-box/certs/privkey.pem 2>/dev/null | sha256sum | awk '{print $1}')"
+  before_sum="$(sha256sum "$TLS_CERT_PATH_ENV" "$TLS_KEY_PATH_ENV" 2>/dev/null | sha256sum | awk '{print $1}')"
   /root/.acme.sh/acme.sh --renew -d "$TLS_DOMAIN_ENV" --ecc --server letsencrypt || true
   /root/.acme.sh/acme.sh --install-cert -d "$TLS_DOMAIN_ENV" --ecc \
-    --fullchain-file /etc/sing-box/certs/fullchain.pem \
-    --key-file /etc/sing-box/certs/privkey.pem
-  after_sum="$(sha256sum /etc/sing-box/certs/fullchain.pem /etc/sing-box/certs/privkey.pem 2>/dev/null | sha256sum | awk '{print $1}')"
+    --fullchain-file "$TLS_CERT_PATH_ENV" \
+    --key-file "$TLS_KEY_PATH_ENV"
+  after_sum="$(sha256sum "$TLS_CERT_PATH_ENV" "$TLS_KEY_PATH_ENV" 2>/dev/null | sha256sum | awk '{print $1}')"
 
   if [ "$before_sum" != "$after_sum" ]; then
     echo "[tls] cert changed, reloading sing-box"
@@ -101,14 +105,36 @@ renew_tls_cert_if_needed() {
   fi
 }
 
+stop_singbox() {
+  if [ -n "$SINGBOX_PID" ] && kill -0 "$SINGBOX_PID" 2>/dev/null; then
+    echo "[sing-box] stopping"
+    kill -TERM "$SINGBOX_PID" 2>/dev/null || true
+    wait "$SINGBOX_PID" 2>/dev/null || true
+  fi
+}
+
+handle_signal() {
+  STOP_REQUESTED="true"
+  stop_singbox
+  exit 0
+}
+
 start_singbox() {
   echo "[sing-box] starting"
   sing-box run -c "$SB_CONFIG" &
   SINGBOX_PID="$!"
 }
 
+validate_required_config() {
+  if [ -z "$TLS_DOMAIN_ENV" ]; then
+    echo "[config] TLS_DOMAIN is required"
+    exit 1
+  fi
+}
+
 mkdir -p "$WGCF_DIR" /etc/sing-box
 cd "$WGCF_DIR"
+validate_required_config
 ensure_tls_cert
 
 if [ ! -f "$WGCF_DIR/wgcf-account.toml" ]; then
@@ -124,7 +150,19 @@ else
   echo "[warp] using existing account"
 fi
 
-if [ ! -f "$WGCF_DIR/wgcf-profile.conf" ]; then
+PROFILE_NEEDS_REGEN="false"
+if [ -n "$WARP_LICENSE_KEY_ENV" ]; then
+  current_warp_license_key="$(awk -F' = ' '/^license_key/{print $2}' "$WGCF_DIR/wgcf-account.toml" | tr -d '"[:space:]' | head -n1)"
+  if [ "$current_warp_license_key" != "$WARP_LICENSE_KEY_ENV" ]; then
+    echo "[warp] applying WARP license key update"
+    wgcf update --license-key "$WARP_LICENSE_KEY_ENV"
+    PROFILE_NEEDS_REGEN="true"
+  else
+    echo "[warp] existing license key already matches"
+  fi
+fi
+
+if [ ! -f "$WGCF_DIR/wgcf-profile.conf" ] || [ "$PROFILE_NEEDS_REGEN" = "true" ]; then
   echo "[warp] generating profile"
   wgcf generate
 fi
@@ -157,17 +195,36 @@ if [ -z "$VLESS_UUID_ENV" ]; then
 fi
 
 sed -i \
-  -e "s|__WARP_PRIVATE_KEY__|$WARP_PRIVATE_KEY|g" \
-  -e "s|__WARP_ADDRESS_V4__|$WARP_ADDRESS_V4|g" \
-  -e "s|__WARP_ADDRESS_V6__|$WARP_ADDRESS_V6|g" \
-  -e "s|__WARP_PEER_PUBLIC_KEY__|$WARP_PEER_PUBLIC_KEY|g" \
-  -e "s|__WARP_PEER_HOST__|$WARP_PEER_HOST|g" \
-  -e "s|__WARP_PEER_PORT__|$WARP_PEER_PORT|g" \
   -e "s|__HY2_PORT__|$HY2_PORT_ENV|g" \
   -e "s|__VLESS_PORT__|$VLESS_PORT_ENV|g" \
-  -e "s|__HY2_PASSWORD__|$HY2_PASSWORD_ENV|g" \
-  -e "s|__VLESS_UUID__|$VLESS_UUID_ENV|g" \
+  -e "s|__WARP_PEER_PORT__|$WARP_PEER_PORT|g" \
   "$SB_CONFIG"
+
+tmp_config="$(mktemp)"
+jq \
+  --arg hy2Password "$HY2_PASSWORD_ENV" \
+  --arg vlessUuid "$VLESS_UUID_ENV" \
+  --arg tlsDomain "$TLS_DOMAIN_ENV" \
+  --arg tlsCertPath "$TLS_CERT_PATH_ENV" \
+  --arg tlsKeyPath "$TLS_KEY_PATH_ENV" \
+  --arg warpPrivateKey "$WARP_PRIVATE_KEY" \
+  --arg warpAddressV4 "$WARP_ADDRESS_V4" \
+  --arg warpAddressV6 "$WARP_ADDRESS_V6" \
+  --arg warpPeerPublicKey "$WARP_PEER_PUBLIC_KEY" \
+  --arg warpPeerHost "$WARP_PEER_HOST" \
+  '
+  (.inbounds[] | select(.type=="hysteria2") | .users[0].password) = $hy2Password |
+  (.inbounds[] | select(.type=="vless") | .users[0].uuid) = $vlessUuid |
+  (.inbounds[] | .tls.server_name) = $tlsDomain |
+  (.inbounds[] | .tls.certificate_path) = $tlsCertPath |
+  (.inbounds[] | .tls.key_path) = $tlsKeyPath |
+  (.outbounds[] | select(.tag=="warp") | .server) = $warpPeerHost |
+  (.outbounds[] | select(.tag=="warp") | .local_address) = [$warpAddressV4, $warpAddressV6] |
+  (.outbounds[] | select(.tag=="warp") | .private_key) = $warpPrivateKey |
+  (.outbounds[] | select(.tag=="warp") | .peer_public_key) = $warpPeerPublicKey
+  ' \
+  "$SB_CONFIG" > "$tmp_config"
+mv "$tmp_config" "$SB_CONFIG"
 
 jq empty "$SB_CONFIG" >/dev/null
 
@@ -198,9 +255,16 @@ fi
 
 start_singbox
 
+trap handle_signal TERM INT HUP
+
 while true; do
+  if [ "$STOP_REQUESTED" = "true" ]; then
+    exit 0
+  fi
+
   if ! kill -0 "$SINGBOX_PID" 2>/dev/null; then
     echo "[sing-box] process exited"
+    wait "$SINGBOX_PID" || true
     exit 1
   fi
 

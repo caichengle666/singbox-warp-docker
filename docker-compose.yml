@@ -38,9 +38,12 @@ services:
       - VLESS_UUID=${VLESS_UUID:-}
       - AUTO_TLS=${AUTO_TLS:-false}
       - TLS_DOMAIN=${TLS_DOMAIN:-}
+      - TLS_CERT_PATH=${TLS_CERT_PATH:-/etc/sing-box/certs/fullchain.pem}
+      - TLS_KEY_PATH=${TLS_KEY_PATH:-/etc/sing-box/certs/privkey.pem}
       - ACME_EMAIL=${ACME_EMAIL:-}
       - TLS_ISSUE_RETRIES=${TLS_ISSUE_RETRIES:-3}
       - TLS_RENEW_INTERVAL=${TLS_RENEW_INTERVAL:-43200}
+      - WARP_LICENSE_KEY=${WARP_LICENSE_KEY:-}
       - CF_Token=${CF_Token:-}
       - CF_Account_ID=${CF_Account_ID:-}
       - CF_Zone_ID=${CF_Zone_ID:-}
