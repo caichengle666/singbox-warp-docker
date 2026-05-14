@@ -38,32 +38,44 @@
       }
     }
   ],
-  "outbounds": [
+  "endpoints": [
     {
       "type": "wireguard",
       "tag": "warp",
-      "server": "__WARP_PEER_HOST__",
-      "server_port": __WARP_PEER_PORT__,
-      "local_address": [
+      "system": false,
+      "mtu": 1280,
+      "address": [
         "__WARP_ADDRESS_V4__",
         "__WARP_ADDRESS_V6__"
       ],
       "private_key": "__WARP_PRIVATE_KEY__",
-      "peer_public_key": "__WARP_PEER_PUBLIC_KEY__",
-      "reserved": [0, 0, 0],
-      "mtu": 1280
-    },
+      "peers": [
+        {
+          "address": "__WARP_PEER_HOST__",
+          "port": __WARP_PEER_PORT__,
+          "public_key": "__WARP_PEER_PUBLIC_KEY__",
+          "allowed_ips": [
+            "0.0.0.0/0",
+            "::/0"
+          ],
+          "reserved": [0, 0, 0]
+        }
+      ]
+    }
+  ],
+  "outbounds": [
     {
       "type": "direct",
       "tag": "direct"
-    },
-    {
-      "type": "block",
-      "tag": "block"
     }
   ],
   "route": {
     "auto_detect_interface": true,
-    "final": "warp"
+    "rules": [
+      {
+        "action": "route",
+        "outbound": "warp"
+      }
+    ]
   }
 }

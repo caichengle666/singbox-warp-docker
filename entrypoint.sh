@@ -250,10 +250,10 @@ jq \
   (.inbounds[] | .tls.server_name) = $tlsDomain |
   (.inbounds[] | .tls.certificate_path) = $tlsCertPath |
   (.inbounds[] | .tls.key_path) = $tlsKeyPath |
-  (.outbounds[] | select(.tag=="warp") | .server) = $warpPeerHost |
-  (.outbounds[] | select(.tag=="warp") | .local_address) = [$warpAddressV4, $warpAddressV6] |
-  (.outbounds[] | select(.tag=="warp") | .private_key) = $warpPrivateKey |
-  (.outbounds[] | select(.tag=="warp") | .peer_public_key) = $warpPeerPublicKey
+  (.endpoints[] | select(.tag=="warp") | .address) = [$warpAddressV4, $warpAddressV6] |
+  (.endpoints[] | select(.tag=="warp") | .private_key) = $warpPrivateKey |
+  (.endpoints[] | select(.tag=="warp") | .peers[0].address) = $warpPeerHost |
+  (.endpoints[] | select(.tag=="warp") | .peers[0].public_key) = $warpPeerPublicKey
   ' \
   "$SB_CONFIG" > "$tmp_config"
 mv "$tmp_config" "$SB_CONFIG"
