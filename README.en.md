@@ -44,6 +44,7 @@ Additional required files for manual certificate mode:
 
 - `./certs/fullchain.pem`
 - `./certs/privkey.pem`
+- If either file is missing, the container exits early with a config error before starting `sing-box`
 
 Optional existing WARP account reuse:
 
@@ -66,6 +67,117 @@ These can be changed if needed, but the service can still start with defaults:
 - `.env` `TLS_RENEW_INTERVAL`, default `43200`
 - `.env` `WARP_LICENSE_KEY`, optional, for WARP+ license binding
 - `./data/wgcf-account.toml`, if you already have a WARP account file to reuse
+
+## `.env` Examples
+
+Two practical examples are provided below.
+
+### Example 1: Manual certificate mode
+
+```env
+# Must change: HY2 port
+HY2_PORT=32443
+
+# Must change: VLESS port
+VLESS_PORT=38443
+
+# Recommended: fixed auth value. If empty, one UUID is generated at startup
+AUTH_UUID=53fbb4a6-b0a1-4b0b-ae60-0b844c76580e
+
+# Optional: overrides only HY2 password; if empty, falls back to AUTH_UUID
+HY2_PASSWORD=
+
+# Optional: overrides only VLESS UUID; if empty, falls back to AUTH_UUID
+VLESS_UUID=
+
+# Usually do not change unless you intentionally want to pin old versions
+SINGBOX_VERSION=1.11.8
+WGCF_VERSION=2.2.26
+
+# Must confirm: manual certificate mode should use false
+AUTO_TLS=false
+
+# Recommended: used for node link generation; set your real domain
+TLS_DOMAIN=1100.ccwu.cc
+
+# Usually do not change
+TLS_CERT_PATH=/etc/sing-box/certs/fullchain.pem
+TLS_KEY_PATH=/etc/sing-box/certs/privkey.pem
+
+# Not needed for manual certificate mode
+ACME_EMAIL=
+
+# Usually do not change
+TLS_ISSUE_RETRIES=3
+TLS_RENEW_INTERVAL=43200
+
+# Optional: not needed for standard WARP; set only if you use WARP+
+WARP_LICENSE_KEY=
+
+# Not needed for manual certificate mode
+CF_Token=
+CF_Account_ID=
+CF_Zone_ID=
+```
+
+Manual certificate mode also requires:
+
+- `./certs/fullchain.pem`
+- `./certs/privkey.pem`
+
+### Example 2: Automatic TLS mode
+
+```env
+# Must change: HY2 port
+HY2_PORT=32443
+
+# Must change: VLESS port
+VLESS_PORT=38443
+
+# Recommended: fixed auth value. If empty, one UUID is generated at startup
+AUTH_UUID=53fbb4a6-b0a1-4b0b-ae60-0b844c76580e
+
+# Optional
+HY2_PASSWORD=
+VLESS_UUID=
+
+# Usually do not change unless you intentionally want to pin old versions
+SINGBOX_VERSION=1.11.8
+WGCF_VERSION=2.2.26
+
+# Must change: automatic TLS mode should use true
+AUTO_TLS=true
+
+# Must change: real domain already pointing to your VPS
+TLS_DOMAIN=1100.ccwu.cc
+
+# Usually do not change
+TLS_CERT_PATH=/etc/sing-box/certs/fullchain.pem
+TLS_KEY_PATH=/etc/sing-box/certs/privkey.pem
+
+# Recommended: ACME account email
+ACME_EMAIL=admin@1100.ccwu.cc
+
+# Usually do not change
+TLS_ISSUE_RETRIES=3
+TLS_RENEW_INTERVAL=43200
+
+# Optional: not needed for standard WARP; set only if you use WARP+
+WARP_LICENSE_KEY=
+
+# Must change: Cloudflare DNS API token
+CF_Token=your_cloudflare_dns_token
+
+# Optional: not required by the current script
+CF_Account_ID=
+CF_Zone_ID=
+```
+
+Automatic TLS mode notes:
+
+- `TLS_DOMAIN` must already resolve to your VPS
+- `CF_Token` must have DNS edit permission for the target zone
+- Certificates are issued automatically and written into `./certs`
 
 ## Auto-managed Values
 

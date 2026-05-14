@@ -4,6 +4,7 @@ set -euo pipefail
 WGCF_DIR="/var/lib/wgcf"
 SB_TEMPLATE="/etc/sing-box/template.json"
 SB_CONFIG="/etc/sing-box/config.json"
+SINGBOX_PID_FILE="/run/sing-box.pid"
 HY2_PORT_ENV="${HY2_PORT:-32443}"
 VLESS_PORT_ENV="${VLESS_PORT:-38443}"
 AUTO_TLS_ENV="${AUTO_TLS:-false}"
@@ -28,6 +29,21 @@ validate_positive_integer() {
     echo "[config] $name must be a positive integer, got: $value"
     exit 1
   fi
+}
+
+renew_tls_cert_once() {
+  local mode="$1"
+
+  if /root/.acme.sh/acme.sh --renew -d "$TLS_DOMAIN_ENV" --ecc --server letsencrypt; then
+    echo "[tls] renewal check succeeded during $mode"
+    /root/.acme.sh/acme.sh --install-cert -d "$TLS_DOMAIN_ENV" --ecc \
+      --fullchain-file "$TLS_CERT_PATH_ENV" \
+      --key-file "$TLS_KEY_PATH_ENV"
+    return 0
+  fi
+
+  echo "[tls] renewal check did not update cert during $mode"
+  return 1
 }
 
 ensure_tls_cert() {
@@ -78,10 +94,7 @@ ensure_tls_cert() {
   else
     echo "[tls] existing cert found, checking renewal"
     before_sum="$(sha256sum "$TLS_CERT_PATH_ENV" "$TLS_KEY_PATH_ENV" 2>/dev/null | sha256sum | awk '{print $1}')"
-    /root/.acme.sh/acme.sh --renew -d "$TLS_DOMAIN_ENV" --ecc --server letsencrypt || true
-    /root/.acme.sh/acme.sh --install-cert -d "$TLS_DOMAIN_ENV" --ecc \
-      --fullchain-file "$TLS_CERT_PATH_ENV" \
-      --key-file "$TLS_KEY_PATH_ENV"
+    renew_tls_cert_once "startup" || true
     after_sum="$(sha256sum "$TLS_CERT_PATH_ENV" "$TLS_KEY_PATH_ENV" 2>/dev/null | sha256sum | awk '{print $1}')"
     if [ "$before_sum" != "$after_sum" ]; then
       echo "[tls] cert updated during startup renewal check"
@@ -101,10 +114,7 @@ renew_tls_cert_if_needed() {
   fi
 
   before_sum="$(sha256sum "$TLS_CERT_PATH_ENV" "$TLS_KEY_PATH_ENV" 2>/dev/null | sha256sum | awk '{print $1}')"
-  /root/.acme.sh/acme.sh --renew -d "$TLS_DOMAIN_ENV" --ecc --server letsencrypt || true
-  /root/.acme.sh/acme.sh --install-cert -d "$TLS_DOMAIN_ENV" --ecc \
-    --fullchain-file "$TLS_CERT_PATH_ENV" \
-    --key-file "$TLS_KEY_PATH_ENV"
+  renew_tls_cert_once "runtime" || true
   after_sum="$(sha256sum "$TLS_CERT_PATH_ENV" "$TLS_KEY_PATH_ENV" 2>/dev/null | sha256sum | awk '{print $1}')"
 
   if [ "$before_sum" != "$after_sum" ]; then
@@ -121,6 +131,7 @@ stop_singbox() {
     kill -TERM "$SINGBOX_PID" 2>/dev/null || true
     wait "$SINGBOX_PID" 2>/dev/null || true
   fi
+  rm -f "$SINGBOX_PID_FILE"
 }
 
 handle_signal() {
@@ -133,6 +144,7 @@ start_singbox() {
   echo "[sing-box] starting"
   sing-box run -c "$SB_CONFIG" &
   SINGBOX_PID="$!"
+  printf '%s\n' "$SINGBOX_PID" > "$SINGBOX_PID_FILE"
 }
 
 validate_required_config() {
@@ -144,6 +156,17 @@ validate_required_config() {
   if [ "$AUTO_TLS_ENV" = "true" ] && [ -z "$TLS_DOMAIN_ENV" ]; then
     echo "[config] TLS_DOMAIN is required when AUTO_TLS=true"
     exit 1
+  fi
+
+  if [ "$AUTO_TLS_ENV" != "true" ]; then
+    if [ ! -s "$TLS_CERT_PATH_ENV" ]; then
+      echo "[config] manual TLS cert file missing: $TLS_CERT_PATH_ENV"
+      exit 1
+    fi
+    if [ ! -s "$TLS_KEY_PATH_ENV" ]; then
+      echo "[config] manual TLS key file missing: $TLS_KEY_PATH_ENV"
+      exit 1
+    fi
   fi
 }
 

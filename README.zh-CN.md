@@ -44,6 +44,7 @@ docker compose logs -f
 
 - `./certs/fullchain.pem`
 - `./certs/privkey.pem`
+- 如果文件缺失，容器会在启动前直接报错并退出
 
 如需复用现有 WARP 账号文件：
 
@@ -66,6 +67,117 @@ docker compose logs -f
 - `.env` `TLS_RENEW_INTERVAL`，默认 `43200`
 - `.env` `WARP_LICENSE_KEY`，可选，用于绑定 WARP+ 许可证
 - `./data/wgcf-account.toml`，如果你已有 WARP 账户文件，可直接复用
+
+## `.env` 示例
+
+下面给两份可以直接参考的示例。
+
+### 示例 1：手动证书模式
+
+```env
+# 必须改：HY2 端口
+HY2_PORT=32443
+
+# 必须改：VLESS 端口
+VLESS_PORT=38443
+
+# 建议改：固定认证值。不填则启动时自动生成
+AUTH_UUID=53fbb4a6-b0a1-4b0b-ae60-0b844c76580e
+
+# 可留空：如果填写，则覆盖 HY2 密码；不填则跟 AUTH_UUID 一致
+HY2_PASSWORD=
+
+# 可留空：如果填写，则覆盖 VLESS UUID；不填则跟 AUTH_UUID 一致
+VLESS_UUID=
+
+# 不建议改：镜像构建参数，除非你明确要固定旧版本
+SINGBOX_VERSION=1.11.8
+WGCF_VERSION=2.2.26
+
+# 必须确认：手动证书模式这里应为 false
+AUTO_TLS=false
+
+# 建议改：用于节点链接生成，建议填写真实域名
+TLS_DOMAIN=1100.ccwu.cc
+
+# 一般不用改：证书在容器内的路径
+TLS_CERT_PATH=/etc/sing-box/certs/fullchain.pem
+TLS_KEY_PATH=/etc/sing-box/certs/privkey.pem
+
+# 可留空：手动证书模式不需要
+ACME_EMAIL=
+
+# 一般不用改
+TLS_ISSUE_RETRIES=3
+TLS_RENEW_INTERVAL=43200
+
+# 可留空：普通 WARP 不需要；如有 WARP+ 可填写
+WARP_LICENSE_KEY=
+
+# 手动证书模式不需要
+CF_Token=
+CF_Account_ID=
+CF_Zone_ID=
+```
+
+手动证书模式还必须准备：
+
+- `./certs/fullchain.pem`
+- `./certs/privkey.pem`
+
+### 示例 2：自动 TLS 模式
+
+```env
+# 必须改：HY2 端口
+HY2_PORT=32443
+
+# 必须改：VLESS 端口
+VLESS_PORT=38443
+
+# 建议改：固定认证值。不填则启动时自动生成
+AUTH_UUID=53fbb4a6-b0a1-4b0b-ae60-0b844c76580e
+
+# 可留空
+HY2_PASSWORD=
+VLESS_UUID=
+
+# 不建议改：镜像构建参数，除非你明确要固定旧版本
+SINGBOX_VERSION=1.11.8
+WGCF_VERSION=2.2.26
+
+# 必须改：自动 TLS 模式这里应为 true
+AUTO_TLS=true
+
+# 必须改：真实域名，且必须已经解析到服务器 IP
+TLS_DOMAIN=1100.ccwu.cc
+
+# 一般不用改
+TLS_CERT_PATH=/etc/sing-box/certs/fullchain.pem
+TLS_KEY_PATH=/etc/sing-box/certs/privkey.pem
+
+# 建议改：用于 ACME 账户注册邮箱
+ACME_EMAIL=admin@1100.ccwu.cc
+
+# 一般不用改
+TLS_ISSUE_RETRIES=3
+TLS_RENEW_INTERVAL=43200
+
+# 可留空：普通 WARP 不需要；如有 WARP+ 可填写
+WARP_LICENSE_KEY=
+
+# 必须改：Cloudflare DNS API Token
+CF_Token=your_cloudflare_dns_token
+
+# 可留空：当前脚本默认不强制要求
+CF_Account_ID=
+CF_Zone_ID=
+```
+
+自动 TLS 模式注意：
+
+- `TLS_DOMAIN` 必须已经解析到你的 VPS
+- `CF_Token` 必须有对应 Zone 的 DNS 编辑权限
+- 启动时会自动申请证书并写入 `./certs`
 
 ## 自动生成或不要手改
 
