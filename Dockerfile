@@ -1,9 +1,11 @@
-FROM alpine:3.20
+FROM debian:trixie-slim
 
 ARG SINGBOX_VERSION=1.11.8
 ARG WGCF_VERSION=2.2.26
 
-RUN apk add --no-cache ca-certificates curl tar bash jq tzdata openssl socat
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl tar bash jq tzdata openssl socat \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
     arch="$(uname -m)"; \
