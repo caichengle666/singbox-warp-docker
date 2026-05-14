@@ -1,22 +1,31 @@
-version: "3.9"
-
 services:
   singbox-warp:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        SINGBOX_VERSION: ${SINGBOX_VERSION:-1.11.8}
-        WGCF_VERSION: ${WGCF_VERSION:-2.2.26}
+    # 默认使用已发布镜像（适合在其他设备直接拉取运行）
+    # 如需固定版本，可改成：
+    # image: ghcr.io/caichengle666/singbox-warp-docker@sha256:<digest>
+    image: ghcr.io/caichengle666/singbox-warp-docker:latest
+
+    # 如需本地源码构建，请删除上面的 image，改回下面这段 build 配置：
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    #   args:
+    #     SINGBOX_VERSION: ${SINGBOX_VERSION:-1.11.8}
+    #     WGCF_VERSION: ${WGCF_VERSION:-2.2.26}
     container_name: singbox-warp
     restart: unless-stopped
     ports:
+      # HY2 需要同时开放 TCP + UDP
       - "${HY2_PORT:-32443}:${HY2_PORT:-32443}/tcp"
       - "${HY2_PORT:-32443}:${HY2_PORT:-32443}/udp"
+      # VLESS(TCP)
       - "${VLESS_PORT:-38443}:${VLESS_PORT:-38443}/tcp"
     volumes:
+      # WARP 账号与 profile 持久化
       - ./data:/var/lib/wgcf
+      # TLS 证书目录（手动证书模式必须有 fullchain.pem/privkey.pem）
       - ./certs:/etc/sing-box/certs
+      # acme.sh 数据目录（AUTO_TLS=true 时使用）
       - ./acme:/var/lib/acme
     cap_add:
       - NET_ADMIN
@@ -25,17 +34,24 @@ services:
     mem_limit: 512m
     pids_limit: 256
     healthcheck:
+      # 通过 PID 文件检查 sing-box 主进程是否存活
       test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"$(cat /run/sing-box.pid)\""]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
     environment:
+      # 端口
       - HY2_PORT=${HY2_PORT:-32443}
       - VLESS_PORT=${VLESS_PORT:-38443}
+      # 认证信息：不填时会自动生成并在日志打印节点链接
       - AUTH_UUID=${AUTH_UUID:-}
       - HY2_PASSWORD=${HY2_PASSWORD:-}
       - VLESS_UUID=${VLESS_UUID:-}
+
+      # TLS 模式：
+      # AUTO_TLS=false -> 使用 ./certs 里的手动证书
+      # AUTO_TLS=true  -> 使用 Cloudflare DNS API 自动签发证书
       - AUTO_TLS=${AUTO_TLS:-false}
       - TLS_DOMAIN=${TLS_DOMAIN:-}
       - TLS_CERT_PATH=${TLS_CERT_PATH:-/etc/sing-box/certs/fullchain.pem}
@@ -43,7 +59,11 @@ services:
       - ACME_EMAIL=${ACME_EMAIL:-}
       - TLS_ISSUE_RETRIES=${TLS_ISSUE_RETRIES:-3}
       - TLS_RENEW_INTERVAL=${TLS_RENEW_INTERVAL:-43200}
+
+      # WARP+ 可选，不填为普通 WARP
       - WARP_LICENSE_KEY=${WARP_LICENSE_KEY:-}
+
+      # 仅 AUTO_TLS=true 需要 CF_Token
       - CF_Token=${CF_Token:-}
       - CF_Account_ID=${CF_Account_ID:-}
       - CF_Zone_ID=${CF_Zone_ID:-}
