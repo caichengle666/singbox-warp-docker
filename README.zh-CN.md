@@ -218,6 +218,35 @@ CF_Zone_ID=
 - `./acme`：保存 ACME 账户和续期状态
 - `./certs`：保存 TLS 证书
 
+## 脚本化工业部署
+
+仓库根目录提供 `deploy.sh`，用于多 VPS 的统一部署。
+
+支持命令：
+
+- `init`：初始化目录和基础配置
+- `deploy`：拉取镜像并更新容器
+- `status`：查看运行状态、镜像、健康检查
+- `rollback`：回滚到上一个镜像（或手动指定镜像）
+
+示例：
+
+```bash
+chmod +x ./deploy.sh
+
+# 首次初始化
+APP_DIR=/opt/singbox-warp AUTO_TLS=false TLS_DOMAIN=your.domain ./deploy.sh init
+
+# 编辑 /opt/singbox-warp/.env 后部署
+APP_DIR=/opt/singbox-warp ./deploy.sh deploy
+
+# 查看状态
+APP_DIR=/opt/singbox-warp ./deploy.sh status
+
+# 回滚（自动用上次记录）
+APP_DIR=/opt/singbox-warp ./deploy.sh rollback
+```
+
 凭据放置建议：
 
 - `wgcf-account.toml` 应放在已被 git 忽略的 `./data` 目录下
