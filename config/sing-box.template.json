@@ -5,7 +5,7 @@
   "inbounds": [
     {
       "type": "hysteria2",
-      "tag": "hy2-in",
+      "tag": "__HY2_TAG__",
       "listen": "::",
       "listen_port": __HY2_PORT__,
       "users": [
@@ -22,7 +22,7 @@
     },
     {
       "type": "vless",
-      "tag": "vless-in",
+      "tag": "__VLESS_TAG__",
       "listen": "::",
       "listen_port": __VLESS_PORT__,
       "users": [
