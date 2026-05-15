@@ -133,6 +133,28 @@ ask_choice() {
   done
 }
 
+ask_menu_choice() {
+  local value=""
+  while true; do
+    printf "\nChoose action:\n" >&2
+    printf "  1) Deploy / Update\n" >&2
+    printf "  2) Show node links\n" >&2
+    printf "  3) Show runtime status\n" >&2
+    printf "  4) Exit\n" >&2
+    printf "Select [1-4]: " >&2
+    read -r value || true
+    case "$value" in
+      1|2|3|4)
+        printf '%s' "$value"
+        return 0
+        ;;
+      *)
+        err "invalid menu choice: ${value:-empty}"
+        ;;
+    esac
+  done
+}
+
 normalize_bool() {
   case "$1" in
     true|yes) printf 'true' ;;
@@ -550,6 +572,18 @@ cmd_status() {
   docker inspect singbox-warp --format 'Health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
 }
 
+cmd_show_nodes() {
+  need_cmd docker
+  if ! docker ps -a --format '{{.Names}}' | grep -Fxq 'singbox-warp'; then
+    err "singbox-warp container not found"
+    exit 1
+  fi
+  docker logs --tail 200 singbox-warp 2>/dev/null | grep '^\[node\]' || {
+    err "no node links found in container logs yet"
+    exit 1
+  }
+}
+
 cmd_rollback() {
   need_cmd docker
   local rollback_image="${1:-}"
@@ -601,7 +635,13 @@ main() {
     usage
     exit 1
   fi
-  cmd_bootstrap
+  action="$(ask_menu_choice)"
+  case "$action" in
+    1) cmd_bootstrap ;;
+    2) cmd_show_nodes ;;
+    3) cmd_status ;;
+    4) log "exit" ;;
+  esac
 }
 
 main "$@"
