@@ -20,6 +20,7 @@ WARP_LICENSE_KEY_ENV="${WARP_LICENSE_KEY:-}"
 AUTH_UUID_ENV="${AUTH_UUID:-}"
 HY2_PASSWORD_ENV="${HY2_PASSWORD:-}"
 VLESS_UUID_ENV="${VLESS_UUID:-}"
+NODE_NAME_ENV="${NODE_NAME:-}"
 SINGBOX_PID=""
 STOP_REQUESTED="false"
 
@@ -31,6 +32,13 @@ validate_positive_integer() {
     echo "[config] $name must be a positive integer, got: $value"
     exit 1
   fi
+}
+
+normalize_name() {
+  local text="$1"
+  text="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
+  text="$(printf '%s' "$text" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+  printf '%s' "${text:-node}"
 }
 
 renew_tls_cert_once() {
@@ -244,9 +252,19 @@ if [ -z "$VLESS_UUID_ENV" ]; then
   VLESS_UUID_ENV="$AUTH_UUID_ENV"
 fi
 
+NODE_NAME_EFFECTIVE="$NODE_NAME_ENV"
+if [ -z "$NODE_NAME_EFFECTIVE" ]; then
+  NODE_NAME_EFFECTIVE="$TLS_DOMAIN_ENV"
+fi
+NODE_NAME_EFFECTIVE="$(normalize_name "$NODE_NAME_EFFECTIVE")"
+HY2_TAG_ENV="hy2-${NODE_NAME_EFFECTIVE}"
+VLESS_TAG_ENV="vless-${NODE_NAME_EFFECTIVE}"
+
 sed -i \
   -e "s|__HY2_PORT__|$HY2_PORT_ENV|g" \
   -e "s|__VLESS_PORT__|$VLESS_PORT_ENV|g" \
+  -e "s|__HY2_TAG__|$HY2_TAG_ENV|g" \
+  -e "s|__VLESS_TAG__|$VLESS_TAG_ENV|g" \
   -e "s|__WARP_PEER_PORT__|$WARP_PEER_PORT|g" \
   "$SB_CONFIG"
 
@@ -264,9 +282,13 @@ jq \
   --arg warpPeerHost "$WARP_PEER_HOST" \
   --arg enableHy2 "$ENABLE_HY2_ENV" \
   --arg enableVless "$ENABLE_VLESS_ENV" \
+  --arg hy2Tag "$HY2_TAG_ENV" \
+  --arg vlessTag "$VLESS_TAG_ENV" \
   '
   (.inbounds[] | select(.type=="hysteria2") | .users[0].password) = $hy2Password |
   (.inbounds[] | select(.type=="vless") | .users[0].uuid) = $vlessUuid |
+  (.inbounds[] | select(.type=="hysteria2") | .tag) = $hy2Tag |
+  (.inbounds[] | select(.type=="vless") | .tag) = $vlessTag |
   (.inbounds[] | .tls.server_name) = $tlsDomain |
   (.inbounds[] | .tls.certificate_path) = $tlsCertPath |
   (.inbounds[] | .tls.key_path) = $tlsKeyPath |

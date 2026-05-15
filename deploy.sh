@@ -17,6 +17,7 @@ AUTO_TLS="${AUTO_TLS:-false}"
 AUTO_DOMAIN="${AUTO_DOMAIN:-true}"
 BASE_DOMAIN="${BASE_DOMAIN:-}"
 TLS_DOMAIN="${TLS_DOMAIN:-}"
+NODE_NAME="${NODE_NAME:-}"
 AUTH_UUID="${AUTH_UUID:-}"
 HY2_PASSWORD="${HY2_PASSWORD:-}"
 VLESS_UUID="${VLESS_UUID:-}"
@@ -70,6 +71,7 @@ Environment:
   AUTO_DOMAIN     true/false (default: true, with AUTO_TLS=true)
   BASE_DOMAIN     base domain for auto subdomain (example: 1100.ccwu.cc)
   TLS_DOMAIN      Recommended for node links, required when AUTO_TLS=true
+  NODE_NAME       Optional node label prefix for generated links
   CF_Token        Required when AUTO_TLS=true
 
   HY2_PORT        Default 32443
@@ -219,6 +221,14 @@ normalize_name() {
   text="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
   text="$(printf '%s' "$text" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
   printf '%s' "${text:-node}"
+}
+
+resolve_node_name() {
+  local source_name="${NODE_NAME:-}"
+  if [[ -z "$source_name" ]]; then
+    source_name="${TLS_DOMAIN:-node}"
+  fi
+  normalize_name "$source_name"
 }
 
 detect_cpu_flavor() {
@@ -457,6 +467,12 @@ validate_config() {
       exit 1
     }
   fi
+
+  if [[ -z "$NODE_NAME" ]]; then
+    NODE_NAME="$(resolve_node_name)"
+  else
+    NODE_NAME="$(normalize_name "$NODE_NAME")"
+  fi
 }
 
 write_compose() {
@@ -505,6 +521,7 @@ ${ports_block}
       - VLESS_UUID=\${VLESS_UUID:-}
       - AUTO_TLS=\${AUTO_TLS:-false}
       - TLS_DOMAIN=\${TLS_DOMAIN:-}
+      - NODE_NAME=\${NODE_NAME:-}
       - TLS_CERT_PATH=\${TLS_CERT_PATH:-/etc/sing-box/certs/fullchain.pem}
       - TLS_KEY_PATH=\${TLS_KEY_PATH:-/etc/sing-box/certs/privkey.pem}
       - ACME_EMAIL=\${ACME_EMAIL:-}
@@ -525,6 +542,7 @@ ENABLE_HY2=$ENABLE_HY2
 ENABLE_VLESS=$ENABLE_VLESS
 AUTO_DOMAIN=$AUTO_DOMAIN
 BASE_DOMAIN=$BASE_DOMAIN
+NODE_NAME=$NODE_NAME
 AUTH_UUID=$AUTH_UUID
 HY2_PASSWORD=$HY2_PASSWORD
 VLESS_UUID=$VLESS_UUID
@@ -629,8 +647,10 @@ cmd_show_nodes() {
   local cfg
   local hy2_password hy2_port hy2_sni hy2_tag hy2_insecure
   local vless_uuid vless_port vless_sni vless_tag
+  local node_name
   local has_any="false"
   local pass
+  node_name="$(normalize_name "${NODE_NAME:-${TLS_DOMAIN:-node}}")"
   for pass in 1 2; do
     has_any="false"
     cfg="$(docker exec singbox-warp sh -c 'cat /etc/sing-box/config.json' 2>/dev/null || true)"
@@ -642,19 +662,21 @@ cmd_show_nodes() {
     hy2_password="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .users[0].password // empty' | head -n1)"
     hy2_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .listen_port // empty' | head -n1)"
     hy2_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .tls.server_name // empty' | head -n1)"
-    hy2_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .tag // "hy2"' | head -n1)"
+    hy2_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .tag // empty' | head -n1)"
     hy2_insecure="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | if .tls.insecure then 1 else 0 end' | head -n1)"
     if [[ -n "$hy2_password" && -n "$hy2_port" && -n "$hy2_sni" ]]; then
-      echo "[node] hy2://${hy2_password}@${hy2_sni}:${hy2_port}?sni=${hy2_sni}&insecure=${hy2_insecure:-0}#${hy2_tag:-hy2}"
+      hy2_tag="${hy2_tag:-hy2-${node_name}}"
+      echo "[node] hy2://${hy2_password}@${hy2_sni}:${hy2_port}?sni=${hy2_sni}&insecure=${hy2_insecure:-0}#${hy2_tag}"
       has_any="true"
     fi
 
     vless_uuid="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .users[0].uuid // empty' | head -n1)"
     vless_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .listen_port // empty' | head -n1)"
     vless_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tls.server_name // empty' | head -n1)"
-    vless_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tag // "vless"' | head -n1)"
+    vless_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tag // empty' | head -n1)"
     if [[ -n "$vless_uuid" && -n "$vless_port" && -n "$vless_sni" ]]; then
-      echo "[node] vless://${vless_uuid}@${vless_sni}:${vless_port}?encryption=none&security=tls&sni=${vless_sni}&type=tcp#${vless_tag:-vless}"
+      vless_tag="${vless_tag:-vless-${node_name}}"
+      echo "[node] vless://${vless_uuid}@${vless_sni}:${vless_port}?encryption=none&security=tls&sni=${vless_sni}&type=tcp#${vless_tag}"
       has_any="true"
     fi
 
