@@ -156,12 +156,12 @@ ask_choice() {
 ask_menu_choice() {
   local value=""
   while true; do
-    printf "\nChoose action:\n" >&2
-    printf "  1) Deploy / Update\n" >&2
-    printf "  2) Show node links\n" >&2
-    printf "  3) Show runtime status\n" >&2
-    printf "  4) Exit\n" >&2
-    printf "Select [1-4]: " >&2
+    printf "\n请选择操作：\n" >&2
+    printf "  1) 部署 / 更新\n" >&2
+    printf "  2) 查看节点信息\n" >&2
+    printf "  3) 查看运行状态\n" >&2
+    printf "  4) 退出\n" >&2
+    printf "请输入 [1-4]： " >&2
     if [[ -r /dev/tty ]]; then
       if ! read -r value < /dev/tty; then
         err "failed to read interactive input from terminal"
@@ -174,7 +174,7 @@ ask_menu_choice() {
       fi
     fi
     if [[ -z "$value" ]]; then
-      err "empty selection; please input 1-4"
+      err "输入不能为空，请输入 1-4"
       continue
     fi
     case "$value" in
@@ -183,7 +183,7 @@ ask_menu_choice() {
         return 0
         ;;
       *)
-        err "invalid menu choice: ${value:-empty}"
+        err "无效选择：${value:-empty}"
         ;;
     esac
   done
@@ -375,31 +375,31 @@ ensure_docker() {
 }
 
 collect_bootstrap_inputs() {
-  APP_DIR="$(ask_input "Deploy directory" "$APP_DIR")"
-  IMAGE="$(ask_input "Image" "$IMAGE")"
-  HY2_PORT="$(ask_input "HY2 port" "$HY2_PORT")"
-  VLESS_PORT="$(ask_input "VLESS port" "$VLESS_PORT")"
-  ENABLE_HY2="$(normalize_bool "$(ask_choice "Enable HY2 (y/n or true/false)" "${ENABLE_HY2}")")"
-  ENABLE_VLESS="$(normalize_bool "$(ask_choice "Enable VLESS (y/n or true/false)" "${ENABLE_VLESS}")")"
-  AUTO_TLS="$(normalize_bool "$(ask_choice "Enable AUTO_TLS (true/false)" "$AUTO_TLS")")"
-  AUTO_DOMAIN="$(normalize_bool "$(ask_choice "Auto-generate subdomain (y/n)" "$AUTO_DOMAIN")")"
+  APP_DIR="$(ask_input "部署目录" "$APP_DIR")"
+  IMAGE="$(ask_input "镜像地址" "$IMAGE")"
+  HY2_PORT="$(ask_input "HY2 端口" "$HY2_PORT")"
+  VLESS_PORT="$(ask_input "VLESS 端口" "$VLESS_PORT")"
+  ENABLE_HY2="$(normalize_bool "$(ask_choice "启用 HY2 (y/n 或 true/false)" "${ENABLE_HY2}")")"
+  ENABLE_VLESS="$(normalize_bool "$(ask_choice "启用 VLESS (y/n 或 true/false)" "${ENABLE_VLESS}")")"
+  AUTO_TLS="$(normalize_bool "$(ask_choice "启用 AUTO_TLS (true/false)" "$AUTO_TLS")")"
+  AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
   if [[ "$AUTO_DOMAIN" == "true" ]]; then
-    BASE_DOMAIN="$(ask_input "Base domain (example: 1100.ccwu.cc)" "$BASE_DOMAIN")"
+    BASE_DOMAIN="$(ask_input "基础域名（例如：1100.ccwu.cc）" "$BASE_DOMAIN")"
   else
-    TLS_DOMAIN="$(ask_input "TLS domain (required when AUTO_TLS=true)" "$TLS_DOMAIN")"
+    TLS_DOMAIN="$(ask_input "TLS 域名（AUTO_TLS=true 时必填）" "$TLS_DOMAIN")"
   fi
-  AUTH_UUID="$(ask_input "AUTH_UUID (optional, blank=auto-generate)" "$AUTH_UUID")"
-  HY2_PASSWORD="$(ask_input "HY2_PASSWORD (optional)" "$HY2_PASSWORD")"
-  VLESS_UUID="$(ask_input "VLESS_UUID (optional)" "$VLESS_UUID")"
-  WARP_LICENSE_KEY="$(ask_input "WARP_LICENSE_KEY (optional)" "$WARP_LICENSE_KEY")"
-  TLS_ISSUE_RETRIES="$(ask_input "TLS issue retries" "$TLS_ISSUE_RETRIES")"
-  TLS_RENEW_INTERVAL="$(ask_input "TLS renew interval seconds" "$TLS_RENEW_INTERVAL")"
+  AUTH_UUID="$(ask_input "AUTH_UUID（可选，留空自动生成）" "$AUTH_UUID")"
+  HY2_PASSWORD="$(ask_input "HY2_PASSWORD（可选）" "$HY2_PASSWORD")"
+  VLESS_UUID="$(ask_input "VLESS_UUID（可选）" "$VLESS_UUID")"
+  WARP_LICENSE_KEY="$(ask_input "WARP_LICENSE_KEY（可选）" "$WARP_LICENSE_KEY")"
+  TLS_ISSUE_RETRIES="$(ask_input "TLS 签发重试次数" "$TLS_ISSUE_RETRIES")"
+  TLS_RENEW_INTERVAL="$(ask_input "TLS 续期间隔（秒）" "$TLS_RENEW_INTERVAL")"
 
   if [[ "$AUTO_TLS" == "true" ]]; then
-    ACME_EMAIL="$(ask_input "ACME_EMAIL (recommended)" "$ACME_EMAIL")"
-    CF_Token="$(ask_input "CF_Token (required when AUTO_TLS=true)" "$CF_Token")"
-    CF_Account_ID="$(ask_input "CF_Account_ID (optional)" "$CF_Account_ID")"
-    CF_Zone_ID="$(ask_input "CF_Zone_ID (optional)" "$CF_Zone_ID")"
+    ACME_EMAIL="$(ask_input "ACME_EMAIL（建议填写）" "$ACME_EMAIL")"
+    CF_Token="$(ask_input "CF_Token（AUTO_TLS=true 时必填）" "$CF_Token")"
+    CF_Account_ID="$(ask_input "CF_Account_ID（可选）" "$CF_Account_ID")"
+    CF_Zone_ID="$(ask_input "CF_Zone_ID（可选）" "$CF_Zone_ID")"
   fi
 }
 
@@ -609,11 +609,11 @@ cmd_status() {
 cmd_show_nodes() {
   need_cmd docker
   if ! docker ps -a --format '{{.Names}}' | grep -Fxq 'singbox-warp'; then
-    err "singbox-warp container not found"
+    err "未找到 singbox-warp 容器"
     exit 1
   fi
   docker logs --tail 200 singbox-warp 2>/dev/null | grep '^\[node\]' || {
-    err "no node links found in container logs yet"
+    err "容器日志中暂未找到可用节点信息"
     exit 1
   }
 }
@@ -674,7 +674,7 @@ main() {
     1) cmd_bootstrap ;;
     2) cmd_show_nodes ;;
     3) cmd_status ;;
-    4) log "exit" ;;
+    4) log "已退出" ;;
   esac
 }
 
