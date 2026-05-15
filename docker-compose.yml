@@ -44,6 +44,8 @@ services:
       # 端口
       - HY2_PORT=${HY2_PORT:-32443}
       - VLESS_PORT=${VLESS_PORT:-38443}
+      - ENABLE_HY2=${ENABLE_HY2:-true}
+      - ENABLE_VLESS=${ENABLE_VLESS:-true}
       # 认证信息：不填时会自动生成并在日志打印节点链接
       - AUTH_UUID=${AUTH_UUID:-}
       - HY2_PASSWORD=${HY2_PASSWORD:-}

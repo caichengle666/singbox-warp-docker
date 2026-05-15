@@ -222,8 +222,30 @@ CF_Zone_ID=
 
 仓库根目录提供 `deploy.sh`，用于多 VPS 的统一部署。
 
+一键引导（全新 VPS 推荐）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh -o deploy.sh
+chmod +x deploy.sh
+./deploy.sh bootstrap
+```
+
+说明：
+
+- `bootstrap` 会自动检查/安装 Docker（支持 Debian/Ubuntu）
+- 交互填写协议选择（`HY2` / `VLESS`）、端口、域名、TLS/WARP 参数
+- 自动生成 `docker-compose.yml` 与 `.env`
+- 自动拉取镜像并启动容器，最后执行健康检查
+
+非交互模式（配合预设环境变量）：
+
+```bash
+APP_DIR=/opt/singbox-warp AUTO_TLS=true TLS_DOMAIN=example.com CF_Token=xxx ./deploy.sh bootstrap --yes
+```
+
 支持命令：
 
+- `bootstrap`：一键安装 Docker + 初始化配置 + 启动容器
 - `init`：初始化目录和基础配置
 - `deploy`：拉取镜像并更新容器
 - `status`：查看运行状态、镜像、健康检查

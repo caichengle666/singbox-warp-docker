@@ -7,6 +7,8 @@ SB_CONFIG="/etc/sing-box/config.json"
 SINGBOX_PID_FILE="/run/sing-box.pid"
 HY2_PORT_ENV="${HY2_PORT:-32443}"
 VLESS_PORT_ENV="${VLESS_PORT:-38443}"
+ENABLE_HY2_ENV="${ENABLE_HY2:-true}"
+ENABLE_VLESS_ENV="${ENABLE_VLESS:-true}"
 AUTO_TLS_ENV="${AUTO_TLS:-false}"
 TLS_DOMAIN_ENV="${TLS_DOMAIN:-}"
 ACME_EMAIL_ENV="${ACME_EMAIL:-}"
@@ -148,10 +150,26 @@ start_singbox() {
 }
 
 validate_required_config() {
+  if [ "$ENABLE_HY2_ENV" != "true" ] && [ "$ENABLE_HY2_ENV" != "false" ]; then
+    echo "[config] ENABLE_HY2 must be true or false, got: $ENABLE_HY2_ENV"
+    exit 1
+  fi
+  if [ "$ENABLE_VLESS_ENV" != "true" ] && [ "$ENABLE_VLESS_ENV" != "false" ]; then
+    echo "[config] ENABLE_VLESS must be true or false, got: $ENABLE_VLESS_ENV"
+    exit 1
+  fi
+  if [ "$ENABLE_HY2_ENV" != "true" ] && [ "$ENABLE_VLESS_ENV" != "true" ]; then
+    echo "[config] at least one inbound must be enabled"
+    exit 1
+  fi
   validate_positive_integer "TLS_ISSUE_RETRIES" "$TLS_ISSUE_RETRIES_ENV"
   validate_positive_integer "TLS_RENEW_INTERVAL" "$TLS_RENEW_INTERVAL_ENV"
-  validate_positive_integer "HY2_PORT" "$HY2_PORT_ENV"
-  validate_positive_integer "VLESS_PORT" "$VLESS_PORT_ENV"
+  if [ "$ENABLE_HY2_ENV" = "true" ]; then
+    validate_positive_integer "HY2_PORT" "$HY2_PORT_ENV"
+  fi
+  if [ "$ENABLE_VLESS_ENV" = "true" ]; then
+    validate_positive_integer "VLESS_PORT" "$VLESS_PORT_ENV"
+  fi
 
   if [ "$AUTO_TLS_ENV" = "true" ] && [ -z "$TLS_DOMAIN_ENV" ]; then
     echo "[config] TLS_DOMAIN is required when AUTO_TLS=true"
@@ -244,12 +262,19 @@ jq \
   --arg warpAddressV6 "$WARP_ADDRESS_V6" \
   --arg warpPeerPublicKey "$WARP_PEER_PUBLIC_KEY" \
   --arg warpPeerHost "$WARP_PEER_HOST" \
+  --arg enableHy2 "$ENABLE_HY2_ENV" \
+  --arg enableVless "$ENABLE_VLESS_ENV" \
   '
   (.inbounds[] | select(.type=="hysteria2") | .users[0].password) = $hy2Password |
   (.inbounds[] | select(.type=="vless") | .users[0].uuid) = $vlessUuid |
   (.inbounds[] | .tls.server_name) = $tlsDomain |
   (.inbounds[] | .tls.certificate_path) = $tlsCertPath |
   (.inbounds[] | .tls.key_path) = $tlsKeyPath |
+  .inbounds |= map(select(
+    (.type=="hysteria2" and $enableHy2=="true") or
+    (.type=="vless" and $enableVless=="true") or
+    (.type!="hysteria2" and .type!="vless")
+  )) |
   (.endpoints[] | select(.tag=="warp") | .address) = [$warpAddressV4, $warpAddressV6] |
   (.endpoints[] | select(.tag=="warp") | .private_key) = $warpPrivateKey |
   (.endpoints[] | select(.tag=="warp") | .peers[0].address) = $warpPeerHost |
