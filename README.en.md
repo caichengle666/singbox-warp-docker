@@ -227,34 +227,18 @@ Keep secrets out of the repository:
 
 The repository includes `deploy.sh` for repeatable VPS deployment workflows.
 
-One-command bootstrap (recommended for a fresh VPS):
+Interactive one-command setup (recommended for a fresh VPS):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh -o deploy.sh
-chmod +x deploy.sh
-./deploy.sh bootstrap
+curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh | bash
 ```
 
-What `bootstrap` does:
+What this interactive script does:
 
 - checks/installs Docker automatically (Debian/Ubuntu)
 - asks for key settings interactively (ports/domain/TLS/WARP)
 - writes `docker-compose.yml` and `.env`
 - pulls image, starts container, and runs health checks
-
-Non-interactive bootstrap:
-
-```bash
-APP_DIR=/opt/singbox-warp AUTO_TLS=true TLS_DOMAIN=example.com CF_Token=xxx ./deploy.sh bootstrap --yes
-```
-
-Supported commands:
-
-- `bootstrap`: install Docker + generate config + start container
-- `init`: initialize layout and base files
-- `deploy`: pull image and update container
-- `status`: inspect runtime status/image/health
-- `rollback`: roll back to previous image (or a specified image)
 
 ## Runtime Safety
 

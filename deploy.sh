@@ -48,12 +48,7 @@ need_cmd() {
 usage() {
   cat <<'EOF'
 Usage:
-  deploy.sh                 # same as bootstrap
-  deploy.sh bootstrap [--yes]
-  deploy.sh init
-  deploy.sh deploy
-  deploy.sh status
-  deploy.sh rollback [IMAGE_OR_DIGEST]
+  deploy.sh
 
 Environment:
   APP_DIR         Deploy directory (default: /opt/singbox-warp)
@@ -324,13 +319,6 @@ ensure_docker() {
 }
 
 collect_bootstrap_inputs() {
-  local assume_yes="${1:-false}"
-  if [[ "$assume_yes" == "true" ]]; then
-    AUTO_TLS="$(normalize_bool "${AUTO_TLS:-false}")"
-    AUTO_DOMAIN="$(normalize_bool "${AUTO_DOMAIN:-true}")"
-    return 0
-  fi
-
   APP_DIR="$(ask_input "Deploy directory" "$APP_DIR")"
   IMAGE="$(ask_input "Image" "$IMAGE")"
   HY2_PORT="$(ask_input "HY2 port" "$HY2_PORT")"
@@ -585,16 +573,7 @@ cmd_rollback() {
 }
 
 cmd_bootstrap() {
-  local assume_yes="false"
-  if [[ "${1:-}" == "--yes" ]]; then
-    assume_yes="true"
-  fi
-  if [[ "${1:-}" != "" && "${1:-}" != "--yes" ]]; then
-    err "unknown bootstrap option: ${1:-}"
-    exit 1
-  fi
-
-  collect_bootstrap_inputs "$assume_yes"
+  collect_bootstrap_inputs
   validate_config
   prepare_auto_domain
   ensure_docker
@@ -613,24 +592,16 @@ cmd_bootstrap() {
 }
 
 main() {
-  local cmd="${1:-}"
-  if [[ -z "$cmd" ]]; then
-    cmd_bootstrap
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
+    usage
     return 0
   fi
-  case "$cmd" in
-    bootstrap) shift; cmd_bootstrap "${1:-}" ;;
-    init) cmd_init ;;
-    deploy) cmd_deploy ;;
-    status) cmd_status ;;
-    rollback) cmd_rollback "${2:-}" ;;
-    -h|--help|help) usage ;;
-    *)
-      err "unknown command: $cmd"
-      usage
-      exit 1
-      ;;
-  esac
+  if [[ -n "${1:-}" ]]; then
+    err "this script supports interactive mode only; run without arguments"
+    usage
+    exit 1
+  fi
+  cmd_bootstrap
 }
 
 main "$@"
