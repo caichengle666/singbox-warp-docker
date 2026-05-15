@@ -170,12 +170,12 @@ ask_choice() {
 ask_menu_choice() {
   local value=""
   while true; do
-    printf "\n请选择操作：\n" >&2
-    printf "  1) 部署 / 更新\n" >&2
-    printf "  2) 查看节点信息\n" >&2
-    printf "  3) 查看运行状态\n" >&2
-    printf "  4) 退出\n" >&2
-    printf "请输入 [1-4]： " >&2
+    printf "\n璇烽€夋嫨鎿嶄綔锛歕n" >&2
+    printf "  1) 閮ㄧ讲 / 鏇存柊\n" >&2
+    printf "  2) 鏌ョ湅鑺傜偣淇℃伅\n" >&2
+    printf "  3) 鏌ョ湅杩愯鐘舵€乗n" >&2
+    printf "  4) 閫€鍑篭n" >&2
+    printf "璇疯緭鍏?[1-4]锛?" >&2
     if [[ -r /dev/tty ]]; then
       if ! read -r value < /dev/tty; then
         err "failed to read interactive input from terminal"
@@ -188,7 +188,7 @@ ask_menu_choice() {
       fi
     fi
     if [[ -z "$value" ]]; then
-      err "输入不能为空，请输入 1-4"
+      err "杈撳叆涓嶈兘涓虹┖锛岃杈撳叆 1-4"
       continue
     fi
     case "$value" in
@@ -197,7 +197,7 @@ ask_menu_choice() {
         return 0
         ;;
       *)
-        err "无效选择：${value:-empty}"
+        err "鏃犳晥閫夋嫨锛?{value:-empty}"
         ;;
     esac
   done
@@ -256,6 +256,14 @@ resolve_auth_values() {
   fi
   if [[ -z "$VLESS_UUID" ]]; then
     VLESS_UUID="$AUTH_UUID"
+  fi
+}
+
+finalize_node_name() {
+  if [[ -z "$NODE_NAME" ]]; then
+    NODE_NAME="$(resolve_node_name)"
+  else
+    NODE_NAME="$(normalize_name "$NODE_NAME")"
   fi
 }
 
@@ -425,31 +433,31 @@ ensure_docker() {
 }
 
 collect_bootstrap_inputs() {
-  APP_DIR="$(ask_input "部署目录" "$APP_DIR")"
-  IMAGE="$(ask_input "镜像地址" "$IMAGE")"
-  HY2_PORT="$(ask_input "HY2 端口" "$HY2_PORT")"
-  VLESS_PORT="$(ask_input "VLESS 端口" "$VLESS_PORT")"
-  ENABLE_HY2="$(normalize_bool "$(ask_choice "启用 HY2 (y/n 或 true/false)" "${ENABLE_HY2}")")"
-  ENABLE_VLESS="$(normalize_bool "$(ask_choice "启用 VLESS (y/n 或 true/false)" "${ENABLE_VLESS}")")"
-  AUTO_TLS="$(normalize_bool "$(ask_choice "启用 AUTO_TLS (true/false)" "$AUTO_TLS")")"
-  AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
+  APP_DIR="$(ask_input "閮ㄧ讲鐩綍" "$APP_DIR")"
+  IMAGE="$(ask_input "闀滃儚鍦板潃" "$IMAGE")"
+  HY2_PORT="$(ask_input "HY2 绔彛" "$HY2_PORT")"
+  VLESS_PORT="$(ask_input "VLESS 绔彛" "$VLESS_PORT")"
+  ENABLE_HY2="$(normalize_bool "$(ask_choice "鍚敤 HY2 (y/n 鎴?true/false)" "${ENABLE_HY2}")")"
+  ENABLE_VLESS="$(normalize_bool "$(ask_choice "鍚敤 VLESS (y/n 鎴?true/false)" "${ENABLE_VLESS}")")"
+  AUTO_TLS="$(normalize_bool "$(ask_choice "鍚敤 AUTO_TLS (true/false)" "$AUTO_TLS")")"
+  AUTO_DOMAIN="$(normalize_bool "$(ask_choice "鑷姩鐢熸垚瀛愬煙鍚?(y/n)" "$AUTO_DOMAIN")")"
   if [[ "$AUTO_DOMAIN" == "true" ]]; then
-    BASE_DOMAIN="$(ask_input "基础域名（例如：1100.ccwu.cc）" "$BASE_DOMAIN")"
+    BASE_DOMAIN="$(ask_input "鍩虹鍩熷悕锛堜緥濡傦細1100.ccwu.cc锛? "$BASE_DOMAIN")"
   else
-    TLS_DOMAIN="$(ask_input "TLS 域名（AUTO_TLS=true 时必填）" "$TLS_DOMAIN")"
+    TLS_DOMAIN="$(ask_input "TLS 鍩熷悕锛圓UTO_TLS=true 鏃跺繀濉級" "$TLS_DOMAIN")"
   fi
-  AUTH_UUID="$(ask_input "AUTH_UUID（可选，留空自动生成）" "$AUTH_UUID")"
-  HY2_PASSWORD="$(ask_input "HY2_PASSWORD（可选）" "$HY2_PASSWORD")"
-  VLESS_UUID="$(ask_input "VLESS_UUID（可选）" "$VLESS_UUID")"
-  WARP_LICENSE_KEY="$(ask_input "WARP_LICENSE_KEY（可选）" "$WARP_LICENSE_KEY")"
-  TLS_ISSUE_RETRIES="$(ask_input "TLS 签发重试次数" "$TLS_ISSUE_RETRIES")"
-  TLS_RENEW_INTERVAL="$(ask_input "TLS 续期间隔（秒）" "$TLS_RENEW_INTERVAL")"
+  AUTH_UUID="$(ask_input "AUTH_UUID锛堝彲閫夛紝鐣欑┖鑷姩鐢熸垚锛? "$AUTH_UUID")"
+  HY2_PASSWORD="$(ask_input "HY2_PASSWORD锛堝彲閫夛級" "$HY2_PASSWORD")"
+  VLESS_UUID="$(ask_input "VLESS_UUID锛堝彲閫夛級" "$VLESS_UUID")"
+  WARP_LICENSE_KEY="$(ask_input "WARP_LICENSE_KEY锛堝彲閫夛級" "$WARP_LICENSE_KEY")"
+  TLS_ISSUE_RETRIES="$(ask_input "TLS 绛惧彂閲嶈瘯娆℃暟" "$TLS_ISSUE_RETRIES")"
+  TLS_RENEW_INTERVAL="$(ask_input "TLS 缁湡闂撮殧锛堢锛? "$TLS_RENEW_INTERVAL")"
 
   if [[ "$AUTO_TLS" == "true" ]]; then
-    ACME_EMAIL="$(ask_input "ACME_EMAIL（建议填写）" "$ACME_EMAIL")"
-    CF_Token="$(ask_input "CF_Token（AUTO_TLS=true 时必填）" "$CF_Token")"
-    CF_Account_ID="$(ask_input "CF_Account_ID（可选）" "$CF_Account_ID")"
-    CF_Zone_ID="$(ask_input "CF_Zone_ID（可选）" "$CF_Zone_ID")"
+    ACME_EMAIL="$(ask_input "ACME_EMAIL锛堝缓璁～鍐欙級" "$ACME_EMAIL")"
+    CF_Token="$(ask_input "CF_Token锛圓UTO_TLS=true 鏃跺繀濉級" "$CF_Token")"
+    CF_Account_ID="$(ask_input "CF_Account_ID锛堝彲閫夛級" "$CF_Account_ID")"
+    CF_Zone_ID="$(ask_input "CF_Zone_ID锛堝彲閫夛級" "$CF_Zone_ID")"
   fi
 }
 
@@ -494,12 +502,6 @@ validate_config() {
       err "manual TLS mode requires $APP_DIR/certs/privkey.pem"
       exit 1
     }
-  fi
-
-  if [[ -z "$NODE_NAME" ]]; then
-    NODE_NAME="$(resolve_node_name)"
-  else
-    NODE_NAME="$(normalize_name "$NODE_NAME")"
   fi
 
   resolve_auth_values
@@ -643,6 +645,7 @@ cmd_deploy() {
   source "$ENV_FILE"
   validate_config
   prepare_auto_domain
+  finalize_node_name
   write_env
   record_current_image_for_rollback
 
@@ -670,7 +673,7 @@ cmd_show_nodes() {
   need_cmd docker
   need_cmd jq
   if ! docker ps --format '{{.Names}}' | grep -Fxq 'singbox-warp'; then
-    err "未找到 singbox-warp 容器"
+    err "鏈壘鍒?singbox-warp 瀹瑰櫒"
     exit 1
   fi
 
@@ -685,7 +688,7 @@ cmd_show_nodes() {
     has_any="false"
     cfg="$(docker exec singbox-warp sh -c 'cat /etc/sing-box/config.json' 2>/dev/null || true)"
     if [[ -z "$cfg" ]]; then
-      err "无法读取容器内 /etc/sing-box/config.json"
+      err "鏃犳硶璇诲彇瀹瑰櫒鍐?/etc/sing-box/config.json"
       exit 1
     fi
 
@@ -715,13 +718,13 @@ cmd_show_nodes() {
     fi
 
     if [[ "$pass" -eq 1 && -f "$ENV_FILE" ]]; then
-      log "未解析到节点，自动执行一次部署刷新后重试..."
+      log "鏈В鏋愬埌鑺傜偣锛岃嚜鍔ㄦ墽琛屼竴娆￠儴缃插埛鏂板悗閲嶈瘯..."
       cmd_deploy || true
     fi
   done
 
   docker logs --tail 200 singbox-warp 2>/dev/null | grep -E '^\[node\] (hy2://|vless://)' || true
-  err "当前运行配置中未解析到可用节点（请先执行部署/更新并检查 TLS_DOMAIN）"
+  err "褰撳墠杩愯閰嶇疆涓湭瑙ｆ瀽鍒板彲鐢ㄨ妭鐐癸紙璇峰厛鎵ц閮ㄧ讲/鏇存柊骞舵鏌?TLS_DOMAIN锛?
   exit 1
 }
 
@@ -751,6 +754,7 @@ cmd_bootstrap() {
   collect_bootstrap_inputs
   validate_config
   prepare_auto_domain
+  finalize_node_name
   ensure_docker
 
   mkdir -p "$APP_DIR"/{data,certs,acme}
@@ -782,7 +786,7 @@ main() {
     1) cmd_bootstrap ;;
     2) cmd_show_nodes ;;
     3) cmd_status ;;
-    4) log "已退出" ;;
+    4) log "宸查€€鍑? ;;
   esac
 }
 
