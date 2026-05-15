@@ -225,13 +225,13 @@ CF_Zone_ID=
 一键引导（全新 VPS 推荐）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh | bash -s -- bootstrap
+curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh | bash
 ```
 
 全自动（非交互，可直接复制）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh | APP_DIR=/opt/singbox-warp AUTO_TLS=true AUTO_DOMAIN=true BASE_DOMAIN=1100.ccwu.cc CF_Token='替换成你的CF_Token' ENABLE_HY2=true ENABLE_VLESS=true bash -s -- bootstrap --yes
+curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh | APP_DIR=/opt/singbox-warp AUTO_TLS=true AUTO_DOMAIN=true BASE_DOMAIN=1100.ccwu.cc CF_Token='替换成你的CF_Token' ENABLE_HY2=true ENABLE_VLESS=true bash -s -- --yes
 ```
 
 说明：

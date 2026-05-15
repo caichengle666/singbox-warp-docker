@@ -48,6 +48,7 @@ need_cmd() {
 usage() {
   cat <<'EOF'
 Usage:
+  deploy.sh                 # same as bootstrap
   deploy.sh bootstrap [--yes]
   deploy.sh init
   deploy.sh deploy
@@ -106,9 +107,9 @@ ask_input() {
   local default="${2:-}"
   local value=""
   if [[ -n "$default" ]]; then
-    printf "%s [%s]: " "$prompt" "$default"
+    printf "%s [%s]: " "$prompt" "$default" >&2
   else
-    printf "%s: " "$prompt"
+    printf "%s: " "$prompt" >&2
   fi
   read -r value || true
   if [[ -z "$value" ]]; then
@@ -122,7 +123,7 @@ ask_choice() {
   local default="$2"
   local value=""
   while true; do
-    printf "%s [%s]: " "$prompt" "$default"
+    printf "%s [%s]: " "$prompt" "$default" >&2
     read -r value || true
     value="${value:-$default}"
     case "$value" in
@@ -613,13 +614,17 @@ cmd_bootstrap() {
 
 main() {
   local cmd="${1:-}"
+  if [[ -z "$cmd" ]]; then
+    cmd_bootstrap
+    return 0
+  fi
   case "$cmd" in
     bootstrap) shift; cmd_bootstrap "${1:-}" ;;
     init) cmd_init ;;
     deploy) cmd_deploy ;;
     status) cmd_status ;;
     rollback) cmd_rollback "${2:-}" ;;
-    -h|--help|help|"") usage ;;
+    -h|--help|help) usage ;;
     *)
       err "unknown command: $cmd"
       usage
