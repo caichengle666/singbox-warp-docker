@@ -101,12 +101,20 @@ ask_input() {
   local prompt="$1"
   local default="${2:-}"
   local value=""
+  local input_fd=0
+  if [[ -r /dev/tty ]]; then
+    input_fd=3
+  fi
   if [[ -n "$default" ]]; then
     printf "%s [%s]: " "$prompt" "$default" >&2
   else
     printf "%s: " "$prompt" >&2
   fi
-  read -r value || true
+  if [[ "$input_fd" -eq 3 ]]; then
+    read -r value < /dev/tty || true
+  else
+    read -r value || true
+  fi
   if [[ -z "$value" ]]; then
     value="$default"
   fi
@@ -119,7 +127,11 @@ ask_choice() {
   local value=""
   while true; do
     printf "%s [%s]: " "$prompt" "$default" >&2
-    read -r value || true
+    if [[ -r /dev/tty ]]; then
+      read -r value < /dev/tty || true
+    else
+      read -r value || true
+    fi
     value="${value:-$default}"
     case "$value" in
       true|false|yes|no|y|n)
@@ -142,7 +154,11 @@ ask_menu_choice() {
     printf "  3) Show runtime status\n" >&2
     printf "  4) Exit\n" >&2
     printf "Select [1-4]: " >&2
-    read -r value || true
+    if [[ -r /dev/tty ]]; then
+      read -r value < /dev/tty || true
+    else
+      read -r value || true
+    fi
     case "$value" in
       1|2|3|4)
         printf '%s' "$value"
