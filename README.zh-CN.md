@@ -230,6 +230,14 @@ chmod +x deploy.sh
 ./deploy.sh bootstrap
 ```
 
+全自动（非交互，可直接复制）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh -o deploy.sh
+chmod +x deploy.sh
+APP_DIR=/opt/singbox-warp AUTO_TLS=true AUTO_DOMAIN=true BASE_DOMAIN=1100.ccwu.cc CF_Token='替换成你的CF_Token' ENABLE_HY2=true ENABLE_VLESS=true ./deploy.sh bootstrap --yes
+```
+
 说明：
 
 - `bootstrap` 会自动检查/安装 Docker（支持 Debian/Ubuntu）
