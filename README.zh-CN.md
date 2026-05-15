@@ -228,6 +228,12 @@ CF_Zone_ID=
 curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh | bash
 ```
 
+安装快捷命令 `swd`（后续直接输入 `swd` 唤醒脚本）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh -o /usr/local/bin/swd && chmod +x /usr/local/bin/swd
+```
+
 说明：
 
 - 脚本只提供交互模式（执行后逐项提示输入）

@@ -608,30 +608,38 @@ cmd_status() {
 
 cmd_show_nodes() {
   need_cmd docker
+  need_cmd jq
   if ! docker ps --format '{{.Names}}' | grep -Fxq 'singbox-warp'; then
     err "未找到 singbox-warp 容器"
     exit 1
   fi
 
+  local cfg
   local hy2_password hy2_port hy2_sni hy2_tag hy2_insecure
   local vless_uuid vless_port vless_sni vless_tag
   local has_any="false"
 
-  hy2_password="$(docker exec singbox-warp sh -c "jq -r '.inbounds[] | select(.type==\"hysteria2\") | .users[0].password // empty' /etc/sing-box/config.json | head -n1" 2>/dev/null || true)"
-  hy2_port="$(docker exec singbox-warp sh -c "jq -r '.inbounds[] | select(.type==\"hysteria2\") | .listen_port // empty' /etc/sing-box/config.json | head -n1" 2>/dev/null || true)"
-  hy2_sni="$(docker exec singbox-warp sh -c "jq -r '.inbounds[] | select(.type==\"hysteria2\") | .tls.server_name // empty' /etc/sing-box/config.json | head -n1" 2>/dev/null || true)"
-  hy2_tag="$(docker exec singbox-warp sh -c "jq -r '.inbounds[] | select(.type==\"hysteria2\") | .tag // \"hy2\"' /etc/sing-box/config.json | head -n1" 2>/dev/null || true)"
-  hy2_insecure="$(docker exec singbox-warp sh -c "jq -r '.inbounds[] | select(.type==\"hysteria2\") | if .tls.insecure then 1 else 0 end' /etc/sing-box/config.json | head -n1" 2>/dev/null || true)"
+  cfg="$(docker exec singbox-warp sh -c 'cat /etc/sing-box/config.json' 2>/dev/null || true)"
+  if [[ -z "$cfg" ]]; then
+    err "无法读取容器内 /etc/sing-box/config.json"
+    exit 1
+  fi
+
+  hy2_password="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .users[0].password // empty' | head -n1)"
+  hy2_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .listen_port // empty' | head -n1)"
+  hy2_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .tls.server_name // empty' | head -n1)"
+  hy2_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .tag // "hy2"' | head -n1)"
+  hy2_insecure="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | if .tls.insecure then 1 else 0 end' | head -n1)"
 
   if [[ -n "$hy2_password" && -n "$hy2_port" && -n "$hy2_sni" ]]; then
     echo "[node] hy2://${hy2_password}@${hy2_sni}:${hy2_port}?sni=${hy2_sni}&insecure=${hy2_insecure:-0}#${hy2_tag:-hy2}"
     has_any="true"
   fi
 
-  vless_uuid="$(docker exec singbox-warp sh -c "jq -r '.inbounds[] | select(.type==\"vless\") | .users[0].uuid // empty' /etc/sing-box/config.json | head -n1" 2>/dev/null || true)"
-  vless_port="$(docker exec singbox-warp sh -c "jq -r '.inbounds[] | select(.type==\"vless\") | .listen_port // empty' /etc/sing-box/config.json | head -n1" 2>/dev/null || true)"
-  vless_sni="$(docker exec singbox-warp sh -c "jq -r '.inbounds[] | select(.type==\"vless\") | .tls.server_name // empty' /etc/sing-box/config.json | head -n1" 2>/dev/null || true)"
-  vless_tag="$(docker exec singbox-warp sh -c "jq -r '.inbounds[] | select(.type==\"vless\") | .tag // \"vless\"' /etc/sing-box/config.json | head -n1" 2>/dev/null || true)"
+  vless_uuid="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .users[0].uuid // empty' | head -n1)"
+  vless_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .listen_port // empty' | head -n1)"
+  vless_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tls.server_name // empty' | head -n1)"
+  vless_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tag // "vless"' | head -n1)"
 
   if [[ -n "$vless_uuid" && -n "$vless_port" && -n "$vless_sni" ]]; then
     echo "[node] vless://${vless_uuid}@${vless_sni}:${vless_port}?encryption=none&security=tls&sni=${vless_sni}&type=tcp#${vless_tag:-vless}"
@@ -639,6 +647,7 @@ cmd_show_nodes() {
   fi
 
   if [[ "$has_any" != "true" ]]; then
+    docker logs --tail 200 singbox-warp 2>/dev/null | grep -E '^\[node\] (hy2://|vless://)' || true
     err "当前运行配置中未解析到可用节点（请先执行部署/更新并检查 TLS_DOMAIN）"
     exit 1
   fi
