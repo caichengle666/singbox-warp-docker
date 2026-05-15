@@ -231,6 +231,34 @@ resolve_node_name() {
   normalize_name "$source_name"
 }
 
+gen_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '\r\n'
+    return 0
+  fi
+
+  if [[ -r /proc/sys/kernel/random/uuid ]]; then
+    tr '[:upper:]' '[:lower:]' </proc/sys/kernel/random/uuid | tr -d '\r\n'
+    return 0
+  fi
+
+  err "failed to generate UUID (uuidgen and /proc/sys/kernel/random/uuid unavailable)"
+  exit 1
+}
+
+resolve_auth_values() {
+  # Generate once and persist into .env by write_env(), so restarts won't rotate.
+  if [[ -z "$AUTH_UUID" ]]; then
+    AUTH_UUID="$(gen_uuid)"
+  fi
+  if [[ -z "$HY2_PASSWORD" ]]; then
+    HY2_PASSWORD="$AUTH_UUID"
+  fi
+  if [[ -z "$VLESS_UUID" ]]; then
+    VLESS_UUID="$AUTH_UUID"
+  fi
+}
+
 detect_cpu_flavor() {
   local info
   info="$(tr '[:upper:]' '[:lower:]' </proc/cpuinfo 2>/dev/null || true)"
@@ -473,6 +501,8 @@ validate_config() {
   else
     NODE_NAME="$(normalize_name "$NODE_NAME")"
   fi
+
+  resolve_auth_values
 }
 
 write_compose() {
