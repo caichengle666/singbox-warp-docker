@@ -101,19 +101,21 @@ ask_input() {
   local prompt="$1"
   local default="${2:-}"
   local value=""
-  local input_fd=0
-  if [[ -r /dev/tty ]]; then
-    input_fd=3
-  fi
   if [[ -n "$default" ]]; then
     printf "%s [%s]: " "$prompt" "$default" >&2
   else
     printf "%s: " "$prompt" >&2
   fi
-  if [[ "$input_fd" -eq 3 ]]; then
-    read -r value < /dev/tty || true
+  if [[ -r /dev/tty ]]; then
+    if ! read -r value < /dev/tty; then
+      err "failed to read interactive input from terminal"
+      exit 1
+    fi
   else
-    read -r value || true
+    if ! read -r value; then
+      err "no interactive terminal detected; run as: curl ... -o deploy.sh && bash deploy.sh"
+      exit 1
+    fi
   fi
   if [[ -z "$value" ]]; then
     value="$default"
@@ -128,9 +130,15 @@ ask_choice() {
   while true; do
     printf "%s [%s]: " "$prompt" "$default" >&2
     if [[ -r /dev/tty ]]; then
-      read -r value < /dev/tty || true
+      if ! read -r value < /dev/tty; then
+        err "failed to read interactive input from terminal"
+        exit 1
+      fi
     else
-      read -r value || true
+      if ! read -r value; then
+        err "no interactive terminal detected; run as: curl ... -o deploy.sh && bash deploy.sh"
+        exit 1
+      fi
     fi
     value="${value:-$default}"
     case "$value" in
@@ -155,9 +163,19 @@ ask_menu_choice() {
     printf "  4) Exit\n" >&2
     printf "Select [1-4]: " >&2
     if [[ -r /dev/tty ]]; then
-      read -r value < /dev/tty || true
+      if ! read -r value < /dev/tty; then
+        err "failed to read interactive input from terminal"
+        exit 1
+      fi
     else
-      read -r value || true
+      if ! read -r value; then
+        err "no interactive terminal detected; run as: curl ... -o deploy.sh && bash deploy.sh"
+        exit 1
+      fi
+    fi
+    if [[ -z "$value" ]]; then
+      err "empty selection; please input 1-4"
+      continue
     fi
     case "$value" in
       1|2|3|4)
