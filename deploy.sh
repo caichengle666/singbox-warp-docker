@@ -36,6 +36,13 @@ ENV_FILE="$APP_DIR/$ENV_FILE_NAME"
 STATE_DIR="$APP_DIR/$STATE_DIR_NAME"
 ROLLBACK_FILE="$STATE_DIR/last_image.txt"
 
+refresh_paths() {
+  COMPOSE_FILE="$APP_DIR/$COMPOSE_FILE_NAME"
+  ENV_FILE="$APP_DIR/$ENV_FILE_NAME"
+  STATE_DIR="$APP_DIR/$STATE_DIR_NAME"
+  ROLLBACK_FILE="$STATE_DIR/last_image.txt"
+}
+
 log() { printf '[deploy] %s\n' "$*"; }
 err() { printf '[deploy][error] %s\n' "$*" >&2; }
 
@@ -449,31 +456,44 @@ ensure_docker() {
 
 collect_bootstrap_inputs() {
   APP_DIR="$(ask_input "部署目录" "$APP_DIR")"
+  refresh_paths
   IMAGE="$(ask_input "镜像地址" "$IMAGE")"
-  HY2_PORT="$(ask_input "HY2 端口" "$HY2_PORT")"
-  VLESS_PORT="$(ask_input "VLESS 端口" "$VLESS_PORT")"
-  ENABLE_HY2="$(normalize_bool "$(ask_choice "启用 HY2 (y/n 或 true/false)" "${ENABLE_HY2}")")"
-  ENABLE_VLESS="$(normalize_bool "$(ask_choice "启用 VLESS (y/n 或 true/false)" "${ENABLE_VLESS}")")"
+
+  printf "\nTLS / 域名配置\n" >&2
   AUTO_TLS="$(normalize_bool "$(ask_choice "启用 AUTO_TLS (true/false)" "$AUTO_TLS")")"
-  AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
-  if [[ "$AUTO_DOMAIN" == "true" ]]; then
-    BASE_DOMAIN="$(ask_input "主域名 (example: 1100.ccwu.cc)" "$BASE_DOMAIN")"
+  if [[ "$AUTO_TLS" == "true" ]]; then
+    AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
+    if [[ "$AUTO_DOMAIN" == "true" ]]; then
+      BASE_DOMAIN="$(ask_input "主域名 (example: 1100.ccwu.cc)" "$BASE_DOMAIN")"
+    else
+      TLS_DOMAIN="$(ask_input "TLS 域名 (AUTO_TLS=true 时必填)" "$TLS_DOMAIN")"
+    fi
+    CF_Token="$(ask_input "CF_Token (AUTO_TLS=true 时必填)" "$CF_Token")"
+    ACME_EMAIL="$(ask_input "ACME_EMAIL (建议填写)" "$ACME_EMAIL")"
+    CF_Account_ID="$(ask_input "CF_Account_ID (可选)" "$CF_Account_ID")"
+    CF_Zone_ID="$(ask_input "CF_Zone_ID (可选)" "$CF_Zone_ID")"
   else
-    TLS_DOMAIN="$(ask_input "TLS 域名 (AUTO_TLS=true 时必填)" "$TLS_DOMAIN")"
+    AUTO_DOMAIN="false"
+    TLS_DOMAIN="$(ask_input "TLS 域名 (手动证书模式用于节点链接)" "$TLS_DOMAIN")"
   fi
+
+  printf "\n协议 / 端口配置\n" >&2
+  ENABLE_HY2="$(normalize_bool "$(ask_choice "启用 HY2 (y/n 或 true/false)" "${ENABLE_HY2}")")"
+  if [[ "$ENABLE_HY2" == "true" ]]; then
+    HY2_PORT="$(ask_input "HY2 端口" "$HY2_PORT")"
+  fi
+  ENABLE_VLESS="$(normalize_bool "$(ask_choice "启用 VLESS (y/n 或 true/false)" "${ENABLE_VLESS}")")"
+  if [[ "$ENABLE_VLESS" == "true" ]]; then
+    VLESS_PORT="$(ask_input "VLESS 端口" "$VLESS_PORT")"
+  fi
+
+  printf "\n可选参数\n" >&2
   AUTH_UUID="$(ask_input "AUTH_UUID (可选，留空自动生成)" "$AUTH_UUID")"
   HY2_PASSWORD="$(ask_input "HY2_PASSWORD (可选)" "$HY2_PASSWORD")"
   VLESS_UUID="$(ask_input "VLESS_UUID (可选)" "$VLESS_UUID")"
   WARP_LICENSE_KEY="$(ask_input "WARP_LICENSE_KEY (可选)" "$WARP_LICENSE_KEY")"
   TLS_ISSUE_RETRIES="$(ask_input "TLS 签发重试次数" "$TLS_ISSUE_RETRIES")"
   TLS_RENEW_INTERVAL="$(ask_input "TLS 续期间隔秒数" "$TLS_RENEW_INTERVAL")"
-
-  if [[ "$AUTO_TLS" == "true" ]]; then
-    ACME_EMAIL="$(ask_input "ACME_EMAIL (建议填写)" "$ACME_EMAIL")"
-    CF_Token="$(ask_input "CF_Token (AUTO_TLS=true 时必填)" "$CF_Token")"
-    CF_Account_ID="$(ask_input "CF_Account_ID (可选)" "$CF_Account_ID")"
-    CF_Zone_ID="$(ask_input "CF_Zone_ID (可选)" "$CF_Zone_ID")"
-  fi
 }
 
 validate_positive_int() {
@@ -558,6 +578,11 @@ ${ports_block}
       timeout: 5s
       retries: 3
       start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       - HY2_PORT=\${HY2_PORT:-32443}
       - VLESS_PORT=\${VLESS_PORT:-38443}

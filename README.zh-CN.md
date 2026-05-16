@@ -252,9 +252,10 @@ curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/m
 
 - 脚本只提供交互模式（执行后逐项提示输入）
 - 启动后提供菜单：部署/更新、查看节点信息、查看运行状态、退出
-- 交互填写协议选择（`HY2` / `VLESS`）、端口、域名、TLS/WARP 参数
+- 交互顺序优先填写 TLS / 域名 / `CF_Token`，再填写协议选择（`HY2` / `VLESS`）、端口和 WARP 参数
 - 自动生成 `docker-compose.yml` 与 `.env`
 - 自动拉取镜像并启动容器，最后执行健康检查
+- 自动生成的 Compose 已限制 Docker 日志轮转：单文件 `10m`，保留 `3` 个文件，避免长期运行撑满磁盘
 
 示例：
 
