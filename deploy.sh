@@ -41,7 +41,7 @@ err() { printf '[deploy][error] %s\n' "$*" >&2; }
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
-    err "missing command: $1"
+    err "缺少命令: $1"
     exit 1
   }
 }
@@ -64,23 +64,23 @@ Usage:
   deploy.sh
 
 Environment:
-  APP_DIR         Deploy directory (default: /opt/singbox-warp)
+  APP_DIR         部署目录 (default: /opt/singbox-warp)
   IMAGE           Runtime image (default: ghcr.io/caichengle666/singbox-warp-docker:latest)
 
   AUTO_TLS        true/false (required)
   AUTO_DOMAIN     true/false (default: true, with AUTO_TLS=true)
-  BASE_DOMAIN     base domain for auto subdomain (example: 1100.ccwu.cc)
-  TLS_DOMAIN      Recommended for node links, required when AUTO_TLS=true
-  NODE_NAME       Optional node label prefix for generated links
-  CF_Token        Required when AUTO_TLS=true
+  BASE_DOMAIN     自动子域名的主域名 (example: 1100.ccwu.cc)
+  TLS_DOMAIN      节点链接使用的域名，AUTO_TLS=true 时必填
+  NODE_NAME       节点名称前缀
+  CF_Token        AUTO_TLS=true 时必填
 
-  HY2_PORT        Default 32443
-  VLESS_PORT      Default 38443
-  AUTH_UUID       Optional fixed auth value
-  HY2_PASSWORD    Optional override
-  VLESS_UUID      Optional override
+  HY2_PORT        默认 32443
+  VLESS_PORT      默认 38443
+  AUTH_UUID       可选，固定认证值
+  HY2_PASSWORD    可选，覆盖 HY2 密码
+  VLESS_UUID      可选，覆盖 VLESS UUID
 
-  Manual TLS mode requires:
+  手动证书模式需要：
     APP_DIR/certs/fullchain.pem
     APP_DIR/certs/privkey.pem
 EOF
@@ -96,7 +96,7 @@ run_root() {
   elif command -v sudo >/dev/null 2>&1; then
     sudo "$@"
   else
-    err "root privileges are required for: $*"
+    err "执行以下命令需要 root 权限: $*"
     exit 1
   fi
 }
@@ -105,7 +105,7 @@ validate_bool() {
   case "$1" in
     true|false) ;;
     *)
-      err "AUTO_TLS must be true or false, got: $1"
+      err "AUTO_TLS 必须是 true 或 false，当前值: $1"
       exit 1
       ;;
   esac
@@ -120,14 +120,19 @@ ask_input() {
   else
     printf "%s: " "$prompt" >&2
   fi
-  if [[ -r /dev/tty ]]; then
+  if [[ "${FORCE_STDIN:-0}" == "1" ]]; then
+    if ! read -r value; then
+      err "未能从 stdin 读取交互输入"
+      exit 1
+    fi
+  elif [[ -r /dev/tty ]]; then
     if ! read -r value < /dev/tty; then
-      err "failed to read interactive input from terminal"
+      err "未能从终端读取交互输入"
       exit 1
     fi
   else
     if ! read -r value; then
-      err "no interactive terminal detected; run as: curl ... -o deploy.sh && bash deploy.sh"
+      err "未检测到交互终端；请使用: curl ... -o deploy.sh && bash deploy.sh"
       exit 1
     fi
   fi
@@ -143,14 +148,19 @@ ask_choice() {
   local value=""
   while true; do
     printf "%s [%s]: " "$prompt" "$default" >&2
-    if [[ -r /dev/tty ]]; then
+    if [[ "${FORCE_STDIN:-0}" == "1" ]]; then
+      if ! read -r value; then
+        err "未能从 stdin 读取交互输入"
+        exit 1
+      fi
+    elif [[ -r /dev/tty ]]; then
       if ! read -r value < /dev/tty; then
-        err "failed to read interactive input from terminal"
+        err "未能从终端读取交互输入"
         exit 1
       fi
     else
       if ! read -r value; then
-        err "no interactive terminal detected; run as: curl ... -o deploy.sh && bash deploy.sh"
+        err "未检测到交互终端；请使用: curl ... -o deploy.sh && bash deploy.sh"
         exit 1
       fi
     fi
@@ -161,7 +171,7 @@ ask_choice() {
         return 0
         ;;
       *)
-        err "invalid choice: $value (expected true/false/yes/no)"
+        err "输入无效: $value (请输入 true/false/yes/no)"
         ;;
     esac
   done
@@ -170,25 +180,30 @@ ask_choice() {
 ask_menu_choice() {
   local value=""
   while true; do
-    printf "\nChoose action:\n" >&2
-    printf "  1) Deploy / Update\n" >&2
-    printf "  2) Show node links\n" >&2
-    printf "  3) Show runtime status\n" >&2
-    printf "  4) Exit\n" >&2
-    printf "Select [1-4]: " >&2
-    if [[ -r /dev/tty ]]; then
+    printf "\n请选择操作:\n" >&2
+    printf "  1) 部署 / 更新\n" >&2
+    printf "  2) 查看节点链接\n" >&2
+    printf "  3) 查看运行状态\n" >&2
+    printf "  4) 退出\n" >&2
+    printf "请输入 [1-4]: " >&2
+    if [[ "${FORCE_STDIN:-0}" == "1" ]]; then
+      if ! read -r value; then
+        err "未能从 stdin 读取交互输入"
+        exit 1
+      fi
+    elif [[ -r /dev/tty ]]; then
       if ! read -r value < /dev/tty; then
-        err "failed to read interactive input from terminal"
+        err "未能从终端读取交互输入"
         exit 1
       fi
     else
       if ! read -r value; then
-        err "no interactive terminal detected; run as: curl ... -o deploy.sh && bash deploy.sh"
+        err "未检测到交互终端；请使用: curl ... -o deploy.sh && bash deploy.sh"
         exit 1
       fi
     fi
     if [[ -z "$value" ]]; then
-      err "empty selection; please input 1-4"
+      err "未输入内容，请输入 1-4"
       continue
     fi
     case "$value" in
@@ -197,7 +212,7 @@ ask_menu_choice() {
         return 0
         ;;
       *)
-        err "invalid menu choice: ${value:-empty}"
+        err "菜单选择无效: ${value:-empty}"
         ;;
     esac
   done
@@ -343,13 +358,13 @@ upsert_cloudflare_a_record() {
       "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records/$record_id" \
       --data "{\"type\":\"A\",\"name\":\"$fqdn\",\"content\":\"$ip\",\"ttl\":120,\"proxied\":$proxied}" \
       | jq -e '.success == true' >/dev/null
-    log "updated Cloudflare A record: $fqdn -> $ip"
+    log "已更新 Cloudflare A 记录: $fqdn -> $ip"
   else
     curl -fsSL -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
       "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records" \
       --data "{\"type\":\"A\",\"name\":\"$fqdn\",\"content\":\"$ip\",\"ttl\":120,\"proxied\":$proxied}" \
       | jq -e '.success == true' >/dev/null
-    log "created Cloudflare A record: $fqdn -> $ip"
+    log "已创建 Cloudflare A 记录: $fqdn -> $ip"
   fi
 }
 
@@ -357,14 +372,14 @@ prepare_auto_domain() {
   if [[ "$AUTO_TLS" != "true" || "$AUTO_DOMAIN" != "true" ]]; then
     return 0
   fi
-  [[ -n "$BASE_DOMAIN" ]] || { err "BASE_DOMAIN is required when AUTO_DOMAIN=true"; exit 1; }
-  [[ -n "$CF_Token" ]] || { err "CF_Token is required when AUTO_DOMAIN=true"; exit 1; }
+  [[ -n "$BASE_DOMAIN" ]] || { err "AUTO_DOMAIN=true 时必须填写 BASE_DOMAIN"; exit 1; }
+  [[ -n "$CF_Token" ]] || { err "AUTO_DOMAIN=true 时必须填写 CF_Token"; exit 1; }
   need_cmd curl
   need_cmd jq
 
   local ip cpu mem country zone_id
   ip="$(get_public_ip)"
-  [[ -n "$ip" ]] || { err "failed to detect public IPv4"; exit 1; }
+  [[ -n "$ip" ]] || { err "无法检测到公网 IPv4"; exit 1; }
   cpu="$(detect_cpu_flavor)"
   mem="$(detect_mem_label)"
   country="$(detect_country_code "$ip")"
@@ -375,10 +390,10 @@ prepare_auto_domain() {
   else
     zone_id="$(resolve_zone_id "$BASE_DOMAIN" "$CF_Token")"
   fi
-  [[ -n "$zone_id" ]] || { err "failed to resolve Cloudflare zone id for $BASE_DOMAIN"; exit 1; }
+  [[ -n "$zone_id" ]] || { err "无法为 $BASE_DOMAIN 解析 Cloudflare zone id"; exit 1; }
   CF_Zone_ID="$zone_id"
   upsert_cloudflare_a_record "$TLS_DOMAIN" "$CF_Zone_ID" "$CF_Token" "$ip" "false"
-  log "auto domain selected: $TLS_DOMAIN"
+  log "已选择自动域名: $TLS_DOMAIN"
 }
 
 validate_true_false() {
@@ -387,7 +402,7 @@ validate_true_false() {
   case "$value" in
     true|false) ;;
     *)
-      err "$name must be true or false, got: $value"
+      err "$name 必须是 true 或 false，当前值: $value"
       exit 1
       ;;
   esac
@@ -395,13 +410,13 @@ validate_true_false() {
 
 ensure_docker() {
   if command -v docker >/dev/null 2>&1; then
-    log "docker already installed: $(docker --version)"
+    log "已安装 docker: $(docker --version)"
     return 0
   fi
 
-  log "docker not found, installing docker engine"
+  log "未找到 docker，正在安装 docker engine"
   if [[ ! -f /etc/os-release ]]; then
-    err "unsupported system: /etc/os-release not found"
+    err "系统不受支持: 未找到 /etc/os-release"
     exit 1
   fi
 
@@ -410,11 +425,11 @@ ensure_docker() {
   local distro="${ID:-}"
   local codename="${VERSION_CODENAME:-}"
   if [[ "$distro" != "ubuntu" && "$distro" != "debian" ]]; then
-    err "unsupported distro for auto-install: ${distro:-unknown} (supported: ubuntu/debian)"
+    err "自动安装不支持该系统: ${distro:-unknown} (仅支持 ubuntu/debian)"
     exit 1
   fi
   if [[ -z "$codename" ]]; then
-    err "failed to detect distro codename for docker apt repo"
+    err "无法识别系统代号，无法配置 docker apt 源"
     exit 1
   fi
 
@@ -433,31 +448,31 @@ ensure_docker() {
 }
 
 collect_bootstrap_inputs() {
-  APP_DIR="$(ask_input "Deploy directory" "$APP_DIR")"
-  IMAGE="$(ask_input "Image" "$IMAGE")"
-  HY2_PORT="$(ask_input "HY2 port" "$HY2_PORT")"
-  VLESS_PORT="$(ask_input "VLESS port" "$VLESS_PORT")"
-  ENABLE_HY2="$(normalize_bool "$(ask_choice "Enable HY2 (y/n or true/false)" "${ENABLE_HY2}")")"
-  ENABLE_VLESS="$(normalize_bool "$(ask_choice "Enable VLESS (y/n or true/false)" "${ENABLE_VLESS}")")"
-  AUTO_TLS="$(normalize_bool "$(ask_choice "Enable AUTO_TLS (true/false)" "$AUTO_TLS")")"
-  AUTO_DOMAIN="$(normalize_bool "$(ask_choice "Auto-generate subdomain (y/n)" "$AUTO_DOMAIN")")"
+  APP_DIR="$(ask_input "部署目录" "$APP_DIR")"
+  IMAGE="$(ask_input "镜像地址" "$IMAGE")"
+  HY2_PORT="$(ask_input "HY2 端口" "$HY2_PORT")"
+  VLESS_PORT="$(ask_input "VLESS 端口" "$VLESS_PORT")"
+  ENABLE_HY2="$(normalize_bool "$(ask_choice "启用 HY2 (y/n 或 true/false)" "${ENABLE_HY2}")")"
+  ENABLE_VLESS="$(normalize_bool "$(ask_choice "启用 VLESS (y/n 或 true/false)" "${ENABLE_VLESS}")")"
+  AUTO_TLS="$(normalize_bool "$(ask_choice "启用 AUTO_TLS (true/false)" "$AUTO_TLS")")"
+  AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
   if [[ "$AUTO_DOMAIN" == "true" ]]; then
-    BASE_DOMAIN="$(ask_input "Base domain (example: 1100.ccwu.cc)" "$BASE_DOMAIN")"
+    BASE_DOMAIN="$(ask_input "主域名 (example: 1100.ccwu.cc)" "$BASE_DOMAIN")"
   else
-    TLS_DOMAIN="$(ask_input "TLS domain (required when AUTO_TLS=true)" "$TLS_DOMAIN")"
+    TLS_DOMAIN="$(ask_input "TLS 域名 (AUTO_TLS=true 时必填)" "$TLS_DOMAIN")"
   fi
-  AUTH_UUID="$(ask_input "AUTH_UUID (optional, blank=auto-generate)" "$AUTH_UUID")"
-  HY2_PASSWORD="$(ask_input "HY2_PASSWORD (optional)" "$HY2_PASSWORD")"
-  VLESS_UUID="$(ask_input "VLESS_UUID (optional)" "$VLESS_UUID")"
-  WARP_LICENSE_KEY="$(ask_input "WARP_LICENSE_KEY (optional)" "$WARP_LICENSE_KEY")"
-  TLS_ISSUE_RETRIES="$(ask_input "TLS issue retries" "$TLS_ISSUE_RETRIES")"
-  TLS_RENEW_INTERVAL="$(ask_input "TLS renew interval seconds" "$TLS_RENEW_INTERVAL")"
+  AUTH_UUID="$(ask_input "AUTH_UUID (可选，留空自动生成)" "$AUTH_UUID")"
+  HY2_PASSWORD="$(ask_input "HY2_PASSWORD (可选)" "$HY2_PASSWORD")"
+  VLESS_UUID="$(ask_input "VLESS_UUID (可选)" "$VLESS_UUID")"
+  WARP_LICENSE_KEY="$(ask_input "WARP_LICENSE_KEY (可选)" "$WARP_LICENSE_KEY")"
+  TLS_ISSUE_RETRIES="$(ask_input "TLS 签发重试次数" "$TLS_ISSUE_RETRIES")"
+  TLS_RENEW_INTERVAL="$(ask_input "TLS 续期间隔秒数" "$TLS_RENEW_INTERVAL")"
 
   if [[ "$AUTO_TLS" == "true" ]]; then
-    ACME_EMAIL="$(ask_input "ACME_EMAIL (recommended)" "$ACME_EMAIL")"
-    CF_Token="$(ask_input "CF_Token (required when AUTO_TLS=true)" "$CF_Token")"
-    CF_Account_ID="$(ask_input "CF_Account_ID (optional)" "$CF_Account_ID")"
-    CF_Zone_ID="$(ask_input "CF_Zone_ID (optional)" "$CF_Zone_ID")"
+    ACME_EMAIL="$(ask_input "ACME_EMAIL (建议填写)" "$ACME_EMAIL")"
+    CF_Token="$(ask_input "CF_Token (AUTO_TLS=true 时必填)" "$CF_Token")"
+    CF_Account_ID="$(ask_input "CF_Account_ID (可选)" "$CF_Account_ID")"
+    CF_Zone_ID="$(ask_input "CF_Zone_ID (可选)" "$CF_Zone_ID")"
   fi
 }
 
@@ -465,7 +480,7 @@ validate_positive_int() {
   local name="$1"
   local value="$2"
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || {
-    err "$name must be a positive integer, got: $value"
+    err "$name 必须是正整数，当前值: $value"
     exit 1
   }
 }
@@ -484,22 +499,22 @@ validate_config() {
   validate_positive_int "TLS_ISSUE_RETRIES" "$TLS_ISSUE_RETRIES"
   validate_positive_int "TLS_RENEW_INTERVAL" "$TLS_RENEW_INTERVAL"
   if [[ "$ENABLE_HY2" != "true" && "$ENABLE_VLESS" != "true" ]]; then
-    err "at least one protocol must be enabled (ENABLE_HY2/ENABLE_VLESS)"
+    err "至少要启用一种协议 (ENABLE_HY2/ENABLE_VLESS)"
     exit 1
   fi
 
   if [[ "$AUTO_TLS" == "true" ]]; then
     if [[ "$AUTO_DOMAIN" != "true" ]]; then
-      [[ -n "$TLS_DOMAIN" ]] || { err "TLS_DOMAIN is required when AUTO_TLS=true and AUTO_DOMAIN=false"; exit 1; }
+      [[ -n "$TLS_DOMAIN" ]] || { err "AUTO_TLS=true 且 AUTO_DOMAIN=false 时必须填写 TLS_DOMAIN"; exit 1; }
     fi
-    [[ -n "$CF_Token" ]] || { err "CF_Token is required when AUTO_TLS=true"; exit 1; }
+    [[ -n "$CF_Token" ]] || { err "AUTO_TLS=true 时必须填写 CF_Token"; exit 1; }
   else
     [[ -s "$APP_DIR/certs/fullchain.pem" ]] || {
-      err "manual TLS mode requires $APP_DIR/certs/fullchain.pem"
+      err "手动证书模式需要 $APP_DIR/certs/fullchain.pem"
       exit 1
     }
     [[ -s "$APP_DIR/certs/privkey.pem" ]] || {
-      err "manual TLS mode requires $APP_DIR/certs/privkey.pem"
+      err "手动证书模式需要 $APP_DIR/certs/privkey.pem"
       exit 1
     }
   fi
@@ -632,14 +647,14 @@ cmd_init() {
   mkdir -p "$APP_DIR"/{data,certs,acme}
   write_compose
   write_env
-  log "init done: $APP_DIR"
-  log "next: edit $ENV_FILE, then run: $0 deploy"
+  log "初始化完成: $APP_DIR"
+  log "下一步: 编辑 $ENV_FILE，然后运行: $0 deploy"
 }
 
 cmd_deploy() {
   need_cmd docker
-  [[ -f "$COMPOSE_FILE" ]] || { err "missing compose file: $COMPOSE_FILE"; exit 1; }
-  [[ -f "$ENV_FILE" ]] || { err "missing env file: $ENV_FILE"; exit 1; }
+  [[ -f "$COMPOSE_FILE" ]] || { err "缺少 compose 文件: $COMPOSE_FILE"; exit 1; }
+  [[ -f "$ENV_FILE" ]] || { err "缺少环境变量文件: $ENV_FILE"; exit 1; }
 
   # shellcheck disable=SC1090
   source "$ENV_FILE"
@@ -655,13 +670,13 @@ cmd_deploy() {
     docker compose up -d
   )
   wait_healthy
-  log "deploy done"
+  log "部署完成"
 }
 
 cmd_status() {
   need_cmd docker
   docker ps --format '{{.Names}} {{.Status}} {{.Image}}' | grep '^singbox-warp ' || {
-    err "singbox-warp container not running"
+    err "singbox-warp 容器未运行"
     exit 1
   }
   docker inspect singbox-warp --format 'ConfigImage={{.Config.Image}}'
@@ -673,7 +688,7 @@ cmd_show_nodes() {
   need_cmd docker
   need_cmd jq
   if ! docker ps --format '{{.Names}}' | grep -Fxq 'singbox-warp'; then
-    err "singbox-warp container not found"
+    err "未找到 singbox-warp 容器"
     exit 1
   fi
 
@@ -688,7 +703,7 @@ cmd_show_nodes() {
     has_any="false"
     cfg="$(docker exec singbox-warp sh -c 'cat /etc/sing-box/config.json' 2>/dev/null || true)"
     if [[ -z "$cfg" ]]; then
-      err "failed to read /etc/sing-box/config.json from container"
+      err "无法读取容器内的 /etc/sing-box/config.json"
       exit 1
     fi
 
@@ -718,13 +733,13 @@ cmd_show_nodes() {
     fi
 
     if [[ "$pass" -eq 1 && -f "$ENV_FILE" ]]; then
-      log "no node links parsed, auto-running one deploy refresh..."
+      log "未解析到节点链接，自动执行一次部署刷新..."
       cmd_deploy || true
     fi
   done
 
   docker logs --tail 200 singbox-warp 2>/dev/null | grep -E '^\[node\] (hy2://|vless://)' || true
-  err "unable to parse node links from running config (run deploy/update and check TLS_DOMAIN)"
+  err "无法从运行配置解析节点链接 (请先执行部署/更新并检查 TLS_DOMAIN)"
   exit 1
 }
 
@@ -733,13 +748,13 @@ cmd_rollback() {
   local rollback_image="${1:-}"
   if [[ -z "$rollback_image" ]]; then
     [[ -f "$ROLLBACK_FILE" ]] || {
-      err "no rollback image found. pass image manually: $0 rollback <image|digest>"
+      err "未找到回滚镜像。请手动传入: $0 rollback <image|digest>"
       exit 1
     }
     rollback_image="$(cat "$ROLLBACK_FILE")"
   fi
 
-  [[ -f "$COMPOSE_FILE" ]] || { err "missing compose file: $COMPOSE_FILE"; exit 1; }
+  [[ -f "$COMPOSE_FILE" ]] || { err "缺少 compose 文件: $COMPOSE_FILE"; exit 1; }
   sed -i -E "s#^(\s*image:\s*).+#\1${rollback_image}#" "$COMPOSE_FILE"
   (
     cd "$APP_DIR"
@@ -747,7 +762,7 @@ cmd_rollback() {
     docker compose up -d
   )
   wait_healthy
-  log "rollback done: $rollback_image"
+  log "回滚完成: $rollback_image"
 }
 
 cmd_bootstrap() {
@@ -767,7 +782,7 @@ cmd_bootstrap() {
     docker compose up -d
   )
   wait_healthy
-  log "bootstrap completed: $APP_DIR"
+  log "初始化部署完成: $APP_DIR"
 }
 
 main() {
@@ -777,7 +792,7 @@ main() {
     return 0
   fi
   if [[ -n "${1:-}" ]]; then
-    err "this script supports interactive mode only; run without arguments"
+    err "此脚本仅支持交互模式，请不要带参数直接运行"
     usage
     exit 1
   fi
@@ -786,7 +801,7 @@ main() {
     1) cmd_bootstrap ;;
     2) cmd_show_nodes ;;
     3) cmd_status ;;
-    4) log "exit" ;;
+    4) log "退出" ;;
   esac
 }
 

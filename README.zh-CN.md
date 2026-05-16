@@ -24,6 +24,20 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
+## 交互脚本
+
+如果你要在 VPS 上一键部署、查看节点、查看状态，可以直接执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh -o deploy.sh && bash deploy.sh
+```
+
+脚本支持中文交互菜单，常用短命令是：
+
+```bash
+swd
+```
+
 ## 必填项
 
 以下内容必须由你自己填写，否则容器无法正常对外提供服务：
