@@ -170,12 +170,12 @@ ask_choice() {
 ask_menu_choice() {
   local value=""
   while true; do
-    printf "\n璇烽€夋嫨鎿嶄綔锛歕n" >&2
-    printf "  1) 閮ㄧ讲 / 鏇存柊\n" >&2
-    printf "  2) 鏌ョ湅鑺傜偣淇℃伅\n" >&2
-    printf "  3) 鏌ョ湅杩愯鐘舵€乗n" >&2
-    printf "  4) 閫€鍑篭n" >&2
-    printf "璇疯緭鍏?[1-4]锛?" >&2
+    printf "\nChoose action:\n" >&2
+    printf "  1) Deploy / Update\n" >&2
+    printf "  2) Show node links\n" >&2
+    printf "  3) Show runtime status\n" >&2
+    printf "  4) Exit\n" >&2
+    printf "Select [1-4]: " >&2
     if [[ -r /dev/tty ]]; then
       if ! read -r value < /dev/tty; then
         err "failed to read interactive input from terminal"
@@ -188,7 +188,7 @@ ask_menu_choice() {
       fi
     fi
     if [[ -z "$value" ]]; then
-      err "杈撳叆涓嶈兘涓虹┖锛岃杈撳叆 1-4"
+      err "empty selection; please input 1-4"
       continue
     fi
     case "$value" in
@@ -197,7 +197,7 @@ ask_menu_choice() {
         return 0
         ;;
       *)
-        err "鏃犳晥閫夋嫨锛?{value:-empty}"
+        err "invalid menu choice: ${value:-empty}"
         ;;
     esac
   done
@@ -433,31 +433,31 @@ ensure_docker() {
 }
 
 collect_bootstrap_inputs() {
-  APP_DIR="$(ask_input "閮ㄧ讲鐩綍" "$APP_DIR")"
-  IMAGE="$(ask_input "闀滃儚鍦板潃" "$IMAGE")"
-  HY2_PORT="$(ask_input "HY2 绔彛" "$HY2_PORT")"
-  VLESS_PORT="$(ask_input "VLESS 绔彛" "$VLESS_PORT")"
-  ENABLE_HY2="$(normalize_bool "$(ask_choice "鍚敤 HY2 (y/n 鎴?true/false)" "${ENABLE_HY2}")")"
-  ENABLE_VLESS="$(normalize_bool "$(ask_choice "鍚敤 VLESS (y/n 鎴?true/false)" "${ENABLE_VLESS}")")"
-  AUTO_TLS="$(normalize_bool "$(ask_choice "鍚敤 AUTO_TLS (true/false)" "$AUTO_TLS")")"
-  AUTO_DOMAIN="$(normalize_bool "$(ask_choice "鑷姩鐢熸垚瀛愬煙鍚?(y/n)" "$AUTO_DOMAIN")")"
+  APP_DIR="$(ask_input "Deploy directory" "$APP_DIR")"
+  IMAGE="$(ask_input "Image" "$IMAGE")"
+  HY2_PORT="$(ask_input "HY2 port" "$HY2_PORT")"
+  VLESS_PORT="$(ask_input "VLESS port" "$VLESS_PORT")"
+  ENABLE_HY2="$(normalize_bool "$(ask_choice "Enable HY2 (y/n or true/false)" "${ENABLE_HY2}")")"
+  ENABLE_VLESS="$(normalize_bool "$(ask_choice "Enable VLESS (y/n or true/false)" "${ENABLE_VLESS}")")"
+  AUTO_TLS="$(normalize_bool "$(ask_choice "Enable AUTO_TLS (true/false)" "$AUTO_TLS")")"
+  AUTO_DOMAIN="$(normalize_bool "$(ask_choice "Auto-generate subdomain (y/n)" "$AUTO_DOMAIN")")"
   if [[ "$AUTO_DOMAIN" == "true" ]]; then
-    BASE_DOMAIN="$(ask_input "鍩虹鍩熷悕锛堜緥濡傦細1100.ccwu.cc锛? "$BASE_DOMAIN")"
+    BASE_DOMAIN="$(ask_input "Base domain (example: 1100.ccwu.cc)" "$BASE_DOMAIN")"
   else
-    TLS_DOMAIN="$(ask_input "TLS 鍩熷悕锛圓UTO_TLS=true 鏃跺繀濉級" "$TLS_DOMAIN")"
+    TLS_DOMAIN="$(ask_input "TLS domain (required when AUTO_TLS=true)" "$TLS_DOMAIN")"
   fi
-  AUTH_UUID="$(ask_input "AUTH_UUID锛堝彲閫夛紝鐣欑┖鑷姩鐢熸垚锛? "$AUTH_UUID")"
-  HY2_PASSWORD="$(ask_input "HY2_PASSWORD锛堝彲閫夛級" "$HY2_PASSWORD")"
-  VLESS_UUID="$(ask_input "VLESS_UUID锛堝彲閫夛級" "$VLESS_UUID")"
-  WARP_LICENSE_KEY="$(ask_input "WARP_LICENSE_KEY锛堝彲閫夛級" "$WARP_LICENSE_KEY")"
-  TLS_ISSUE_RETRIES="$(ask_input "TLS 绛惧彂閲嶈瘯娆℃暟" "$TLS_ISSUE_RETRIES")"
-  TLS_RENEW_INTERVAL="$(ask_input "TLS 缁湡闂撮殧锛堢锛? "$TLS_RENEW_INTERVAL")"
+  AUTH_UUID="$(ask_input "AUTH_UUID (optional, blank=auto-generate)" "$AUTH_UUID")"
+  HY2_PASSWORD="$(ask_input "HY2_PASSWORD (optional)" "$HY2_PASSWORD")"
+  VLESS_UUID="$(ask_input "VLESS_UUID (optional)" "$VLESS_UUID")"
+  WARP_LICENSE_KEY="$(ask_input "WARP_LICENSE_KEY (optional)" "$WARP_LICENSE_KEY")"
+  TLS_ISSUE_RETRIES="$(ask_input "TLS issue retries" "$TLS_ISSUE_RETRIES")"
+  TLS_RENEW_INTERVAL="$(ask_input "TLS renew interval seconds" "$TLS_RENEW_INTERVAL")"
 
   if [[ "$AUTO_TLS" == "true" ]]; then
-    ACME_EMAIL="$(ask_input "ACME_EMAIL锛堝缓璁～鍐欙級" "$ACME_EMAIL")"
-    CF_Token="$(ask_input "CF_Token锛圓UTO_TLS=true 鏃跺繀濉級" "$CF_Token")"
-    CF_Account_ID="$(ask_input "CF_Account_ID锛堝彲閫夛級" "$CF_Account_ID")"
-    CF_Zone_ID="$(ask_input "CF_Zone_ID锛堝彲閫夛級" "$CF_Zone_ID")"
+    ACME_EMAIL="$(ask_input "ACME_EMAIL (recommended)" "$ACME_EMAIL")"
+    CF_Token="$(ask_input "CF_Token (required when AUTO_TLS=true)" "$CF_Token")"
+    CF_Account_ID="$(ask_input "CF_Account_ID (optional)" "$CF_Account_ID")"
+    CF_Zone_ID="$(ask_input "CF_Zone_ID (optional)" "$CF_Zone_ID")"
   fi
 }
 
@@ -673,7 +673,7 @@ cmd_show_nodes() {
   need_cmd docker
   need_cmd jq
   if ! docker ps --format '{{.Names}}' | grep -Fxq 'singbox-warp'; then
-    err "鏈壘鍒?singbox-warp 瀹瑰櫒"
+    err "singbox-warp container not found"
     exit 1
   fi
 
@@ -688,7 +688,7 @@ cmd_show_nodes() {
     has_any="false"
     cfg="$(docker exec singbox-warp sh -c 'cat /etc/sing-box/config.json' 2>/dev/null || true)"
     if [[ -z "$cfg" ]]; then
-      err "鏃犳硶璇诲彇瀹瑰櫒鍐?/etc/sing-box/config.json"
+      err "failed to read /etc/sing-box/config.json from container"
       exit 1
     fi
 
@@ -718,13 +718,13 @@ cmd_show_nodes() {
     fi
 
     if [[ "$pass" -eq 1 && -f "$ENV_FILE" ]]; then
-      log "鏈В鏋愬埌鑺傜偣锛岃嚜鍔ㄦ墽琛屼竴娆￠儴缃插埛鏂板悗閲嶈瘯..."
+      log "no node links parsed, auto-running one deploy refresh..."
       cmd_deploy || true
     fi
   done
 
   docker logs --tail 200 singbox-warp 2>/dev/null | grep -E '^\[node\] (hy2://|vless://)' || true
-  err "褰撳墠杩愯閰嶇疆涓湭瑙ｆ瀽鍒板彲鐢ㄨ妭鐐癸紙璇峰厛鎵ц閮ㄧ讲/鏇存柊骞舵鏌?TLS_DOMAIN锛?
+  err "unable to parse node links from running config (run deploy/update and check TLS_DOMAIN)"
   exit 1
 }
 
@@ -786,7 +786,7 @@ main() {
     1) cmd_bootstrap ;;
     2) cmd_show_nodes ;;
     3) cmd_status ;;
-    4) log "宸查€€鍑? ;;
+    4) log "exit" ;;
   esac
 }
 
