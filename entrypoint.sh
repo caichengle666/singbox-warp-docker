@@ -234,6 +234,7 @@ WARP_PEER_PUBLIC_KEY="$(awk -F' = ' '/^PublicKey/{print $2}' "$profile" | tr -d 
 WARP_PEER_ENDPOINT="$(awk -F' = ' '/^Endpoint/{print $2}' "$profile" | tr -d '[:space:]')"
 WARP_PEER_HOST="${WARP_PEER_ENDPOINT%%:*}"
 WARP_PEER_PORT="${WARP_PEER_ENDPOINT##*:}"
+WARP_RESERVED="$(awk -F' = ' '/^Reserved/{print $2}' "$profile" | tr -d '[:space:]' | head -n1)"
 
 if [ -z "$WARP_PRIVATE_KEY" ] || [ -z "$WARP_ADDRESS_V4" ] || [ -z "$WARP_PEER_PUBLIC_KEY" ] || [ -z "$WARP_PEER_HOST" ] || [ -z "$WARP_PEER_PORT" ]; then
   echo "[warp] failed to parse wgcf profile"
@@ -280,6 +281,7 @@ jq \
   --arg warpAddressV6 "$WARP_ADDRESS_V6" \
   --arg warpPeerPublicKey "$WARP_PEER_PUBLIC_KEY" \
   --arg warpPeerHost "$WARP_PEER_HOST" \
+  --arg warpReserved "$WARP_RESERVED" \
   --arg enableHy2 "$ENABLE_HY2_ENV" \
   --arg enableVless "$ENABLE_VLESS_ENV" \
   --arg hy2Tag "$HY2_TAG_ENV" \
@@ -300,7 +302,13 @@ jq \
   (.endpoints[] | select(.tag=="warp") | .address) = [$warpAddressV4, $warpAddressV6] |
   (.endpoints[] | select(.tag=="warp") | .private_key) = $warpPrivateKey |
   (.endpoints[] | select(.tag=="warp") | .peers[0].address) = $warpPeerHost |
-  (.endpoints[] | select(.tag=="warp") | .peers[0].public_key) = $warpPeerPublicKey
+  (.endpoints[] | select(.tag=="warp") | .peers[0].public_key) = $warpPeerPublicKey |
+  if $warpReserved != "" then
+    (.endpoints[] | select(.tag=="warp") | .peers[0].reserved) =
+      ($warpReserved | split(",") | map(tonumber))
+  else
+    .
+  end
   ' \
   "$SB_CONFIG" > "$tmp_config"
 mv "$tmp_config" "$SB_CONFIG"
