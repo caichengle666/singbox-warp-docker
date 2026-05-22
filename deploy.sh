@@ -248,7 +248,18 @@ normalize_name() {
 resolve_node_name() {
   local source_name="${NODE_NAME:-}"
   if [[ -z "$source_name" ]]; then
-    source_name="${TLS_DOMAIN:-node}"
+    # 自动生成：amd1g-{IP末段}-{城市简称}
+    local ip cpu mem city ip_suffix
+    ip="$(get_public_ip 2>/dev/null || echo "")"
+    if [[ -n "$ip" ]]; then
+      cpu="$(detect_cpu_flavor)"
+      mem="$(detect_mem_label)"
+      city="$(detect_city_code "$ip" 2>/dev/null || echo "x")"
+      ip_suffix="${ip##*.}"
+      source_name="${cpu}${mem}-${ip_suffix}-${city}"
+    else
+      source_name="${TLS_DOMAIN:-node}"
+    fi
   fi
   normalize_name "$source_name"
 }
@@ -326,18 +337,37 @@ get_public_ip() {
   printf '%s' "$ip"
 }
 
-detect_country_code() {
+detect_city_code() {
   local ip="$1"
+  local city=""
+  city="$(curl -fsSL "https://ipapi.co/${ip}/city/" 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d '\r\n' | sed 's/ //g' || true)"
+  if [[ -z "$city" ]]; then
+    city="$(curl -fsSL "https://ipwho.is/${ip}" 2>/dev/null | jq -r '.city // empty' | tr '[:upper:]' '[:lower:]' | sed 's/ //g' || true)"
+  fi
   local code=""
-  code="$(curl -fsSL "https://ipapi.co/${ip}/country/" 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d '\r\n' || true)"
-  if [[ ! "$code" =~ ^[a-z]{2}$ ]]; then
-    code="$(curl -fsSL "https://ipwho.is/${ip}" 2>/dev/null | jq -r '.country_code // empty' | tr '[:upper:]' '[:lower:]' || true)"
-  fi
-  if [[ ! "$code" =~ ^[a-z]{2}$ ]]; then
-    code="xx"
-  fi
+  case "$city" in
+    phoenix)            code="phx" ;;
+    sanjose|san*jose)   code="sjc" ;;
+    losangeles)         code="lax" ;;
+    newyork)            code="nyc" ;;
+    chicago)            code="chi" ;;
+    dallas)             code="dfw" ;;
+    seattle)            code="sea" ;;
+    miami)              code="mia" ;;
+    dubai)              code="dxb" ;;
+    tokyo)              code="tyo" ;;
+    osaka)              code="osa" ;;
+    seoul)              code="sel" ;;
+    chuncheon)          code="chc" ;;
+    singapore)          code="sin" ;;
+    london)             code="lon" ;;
+    frankfurt)          code="fra" ;;
+    *)                  code="${city:0:3}" ;;
+  esac
   printf '%s' "$code"
 }
+
+
 
 resolve_zone_id() {
   local zone_name="$1"
@@ -389,8 +419,9 @@ prepare_auto_domain() {
   [[ -n "$ip" ]] || { err "无法检测到公网 IPv4"; exit 1; }
   cpu="$(detect_cpu_flavor)"
   mem="$(detect_mem_label)"
-  country="$(detect_country_code "$ip")"
-  TLS_DOMAIN="${cpu}${mem}-${country}.${BASE_DOMAIN}"
+  city="$(detect_city_code "$ip")"
+  ip_suffix="${ip##*.}"
+  TLS_DOMAIN="${cpu}${mem}-${ip_suffix}-${city}.${BASE_DOMAIN}"
 
   if [[ -n "$CF_Zone_ID" ]]; then
     zone_id="$CF_Zone_ID"
