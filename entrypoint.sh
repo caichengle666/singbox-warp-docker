@@ -269,6 +269,7 @@ sed -i \
   -e "s|__HY2_TAG__|$HY2_TAG_ENV|g" \
   -e "s|__VLESS_TAG__|$VLESS_TAG_ENV|g" \
   -e "s|__WARP_PEER_PORT__|$WARP_PEER_PORT|g" \
+  -e "s|__MIXED_PORT__|$MIXED_PORT_ENV|g" \
   "$SB_CONFIG"
 
 tmp_config="$(mktemp)"
