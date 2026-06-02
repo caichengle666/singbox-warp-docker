@@ -54,6 +54,7 @@ jobs:
           rendered="${rendered//__WARP_ADDRESS_V6__/2606:4700:110:8765::2/128}"
           rendered="${rendered//__WARP_PRIVATE_KEY__/dummy_private_key}"
           rendered="${rendered//__WARP_PEER_PUBLIC_KEY__/dummy_peer_public_key}"
+          rendered="${rendered//__MIXED_PORT__/1080}"
           echo "$rendered" | jq empty
 
       - name: Resolve latest versions
