@@ -71,6 +71,7 @@ swd
 
 - `.env` `HY2_PORT`，默认 `32443`
 - `.env` `VLESS_PORT`，默认 `38443`
+- `.env` `MIXED_PORT`，默认 `1080`（**本地 HTTP+SOCKS5 代理入口**，详见下节）
 - `.env` `AUTH_UUID`，统一设置 `hy2 password` 和 `vless uuid`
 - `.env` `HY2_PASSWORD`，单独覆盖 `hy2 password`
 - `.env` `VLESS_UUID`，单独覆盖 `vless uuid`
@@ -81,6 +82,28 @@ swd
 - `.env` `TLS_RENEW_INTERVAL`，默认 `43200`
 - `.env` `WARP_LICENSE_KEY`，可选，用于绑定 WARP+ 许可证
 - `./data/wgcf-account.toml`，如果你已有 WARP 账户文件，可直接复用
+
+## 本地代理入口（MIXED）
+
+容器内 sing-box 启动一个 **`mixed` 类型入站**，**默认监听 `1080` 端口**，同时支持：
+
+- **SOCKS5 代理**：`socks5://127.0.0.1:1080`
+- **HTTP CONNECT 代理**：`http://127.0.0.1:1080`
+
+**所有流量都通过 WARP 出口出去**，最终出口 IP 是 Cloudflare 边缘节点，**不是**你服务器本身的 IP。
+
+典型用途：
+
+- **本机工具代理**：让宿主机上的 `curl`、`git`、`apt` 等通过 `127.0.0.1:1080` 走出 WARP 网络
+  ```bash
+  curl -x socks5://127.0.0.1:1080 https://api.ipify.org
+  ```
+- **隧道转发**：配合 Cloudflare Tunnel（或其他反向代理）把 `1080` 暴露成公网 SOCKS5 端点
+- **局域网共享**：把容器端口映射到宿主机 `0.0.0.0:1080`，给同网段其他设备共享代理
+
+**端口修改**：在 `.env` 设 `MIXED_PORT=xxxx` 即可，容器端口和宿主机端口会同步变更。
+
+> ⚠️ **安全提示**：`1080` 端口没有任何认证机制，**不要直接暴露到公网**。如果需要远程访问，请配合 Cloudflare Tunnel（推荐 Access 鉴权）或 SSH 端口转发。
 
 ## `.env` 示例
 
@@ -94,6 +117,9 @@ HY2_PORT=32443
 
 # 必须改：VLESS 端口
 VLESS_PORT=38443
+
+# 可选：本地 HTTP+SOCKS5 代理端口（不影响 HY2/VLESS 节点使用）
+MIXED_PORT=1080
 
 # 建议改：固定认证值。不填则启动时自动生成
 AUTH_UUID=53fbb4a6-b0a1-4b0b-ae60-0b844c76580e
@@ -147,6 +173,9 @@ HY2_PORT=32443
 
 # 必须改：VLESS 端口
 VLESS_PORT=38443
+
+# 可选：本地 HTTP+SOCKS5 代理端口（不影响 HY2/VLESS 节点使用）
+MIXED_PORT=1080
 
 # 建议改：固定认证值。不填则启动时自动生成
 AUTH_UUID=53fbb4a6-b0a1-4b0b-ae60-0b844c76580e
@@ -293,12 +322,21 @@ APP_DIR=/opt/singbox-warp ./deploy.sh rollback
 
 这是一份模板，不是最终运行文件。启动时脚本会自动注入：
 
-- 端口
-- `hy2 password`
-- `vless uuid`
-- `tls.server_name`
-- 证书路径
+- HY2 端口 / 密码
+- VLESS 端口 / UUID
+- TLS 证书路径与域名
 - WARP 出站参数
+- `MIXED` 入站端口
+
+模板里 3 个 inbound 的关系：
+
+| 类型 | 用途 | 客户端 |
+|---|---|---|
+| `hysteria2` | 外部节点出站 | HY2 客户端（自用或分享） |
+| `vless` | 外部节点出站 | v2rayN/Nekoray 等（自用或分享） |
+| `mixed` | **本地 HTTP+SOCKS5 代理** | 宿主机工具、Cloudflare Tunnel 转发 |
+
+`mixed` 不需要密码/TLS，因为它只监听在容器内（`0.0.0.0:1080`），流量立刻被 WARP 出口接管。
 
 你主要需要关注：
 
@@ -346,6 +384,12 @@ APP_DIR=/opt/singbox-warp ./deploy.sh rollback
         "certificate_path": "__TLS_CERT_PATH__",
         "key_path": "__TLS_KEY_PATH__"
       }
+    },
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "0.0.0.0",
+      "listen_port": __MIXED_PORT__
     }
   ],
   "outbounds": [

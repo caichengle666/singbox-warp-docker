@@ -57,6 +57,7 @@ These can be changed if needed, but the service can still start with defaults:
 
 - `.env` `HY2_PORT`, default `32443`
 - `.env` `VLESS_PORT`, default `38443`
+- `.env` `MIXED_PORT`, default `1080` (**local HTTP+SOCKS5 proxy entry**, see next section)
 - `.env` `AUTH_UUID`, shared value for `hy2 password` and `vless uuid`
 - `.env` `HY2_PASSWORD`, override only `hy2 password`
 - `.env` `VLESS_UUID`, override only `vless uuid`
@@ -67,6 +68,28 @@ These can be changed if needed, but the service can still start with defaults:
 - `.env` `TLS_RENEW_INTERVAL`, default `43200`
 - `.env` `WARP_LICENSE_KEY`, optional, for WARP+ license binding
 - `./data/wgcf-account.toml`, if you already have a WARP account file to reuse
+
+## Local proxy entry (MIXED)
+
+sing-box inside the container runs a **`mixed`-type inbound** that **listens on `1080` by default**, supporting both:
+
+- **SOCKS5 proxy**: `socks5://127.0.0.1:1080`
+- **HTTP CONNECT proxy**: `http://127.0.0.1:1080`
+
+**All traffic exits through the WARP tunnel**, so the public egress IP is a Cloudflare edge node, **not** your server's own IP.
+
+Common uses:
+
+- **Local tooling proxy**: route `curl`, `git`, `apt`, etc. on the host through `127.0.0.1:1080`
+  ```bash
+  curl -x socks5://127.0.0.1:1080 https://api.ipify.org
+  ```
+- **Tunnel forwarding**: expose `1080` as a public SOCKS5 endpoint via Cloudflare Tunnel (or any reverse proxy)
+- **LAN sharing**: map the container port to host `0.0.0.0:1080` and share with other devices on the same network
+
+**Port change**: set `MIXED_PORT=xxxx` in `.env`; both container and host ports are updated together.
+
+> ⚠️ **Security note**: port `1080` has no authentication. **Do not expose it directly to the public internet.** For remote access, use Cloudflare Tunnel (preferably with Access auth) or SSH port forwarding.
 
 ## `.env` Examples
 
@@ -80,6 +103,9 @@ HY2_PORT=32443
 
 # Must change: VLESS port
 VLESS_PORT=38443
+
+# Optional: local HTTP+SOCKS5 proxy port (does not affect HY2/VLESS node usage)
+MIXED_PORT=1080
 
 # Recommended: fixed auth value. If empty, one UUID is generated at startup
 AUTH_UUID=53fbb4a6-b0a1-4b0b-ae60-0b844c76580e
@@ -133,6 +159,9 @@ HY2_PORT=32443
 
 # Must change: VLESS port
 VLESS_PORT=38443
+
+# Optional: local HTTP+SOCKS5 proxy port (does not affect HY2/VLESS node usage)
+MIXED_PORT=1080
 
 # Recommended: fixed auth value. If empty, one UUID is generated at startup
 AUTH_UUID=53fbb4a6-b0a1-4b0b-ae60-0b844c76580e
@@ -253,12 +282,21 @@ File used: `config/sing-box.template.json`
 
 This is a template, not the final runtime config. On startup the script injects:
 
-- ports
-- `hy2 password`
-- `vless uuid`
-- `tls.server_name`
-- certificate paths
+- HY2 port / password
+- VLESS port / UUID
+- TLS certificate path and server name
 - WARP outbound parameters
+- `MIXED` inbound port
+
+Relationship between the 3 inbounds in the template:
+
+| Type | Purpose | Client |
+|---|---|---|
+| `hysteria2` | External node egress | HY2 client (self-use or share) |
+| `vless` | External node egress | v2rayN/Nekoray etc. (self-use or share) |
+| `mixed` | **Local HTTP+SOCKS5 proxy** | Host tools, Cloudflare Tunnel forwarding |
+
+`mixed` does not need password or TLS — it only listens inside the container (`0.0.0.0:1080`) and traffic is immediately handled by the WARP outbound.
 
 In most cases you mainly need to care about:
 
@@ -306,6 +344,12 @@ Template example:
         "certificate_path": "__TLS_CERT_PATH__",
         "key_path": "__TLS_KEY_PATH__"
       }
+    },
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "0.0.0.0",
+      "listen_port": __MIXED_PORT__
     }
   ],
   "outbounds": [
