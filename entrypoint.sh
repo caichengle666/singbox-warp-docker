@@ -9,6 +9,7 @@ HY2_PORT_ENV="${HY2_PORT:-32443}"
 VLESS_PORT_ENV="${VLESS_PORT:-38443}"
 ENABLE_HY2_ENV="${ENABLE_HY2:-true}"
 ENABLE_VLESS_ENV="${ENABLE_VLESS:-true}"
+MIXED_PORT_ENV="${MIXED_PORT:-1080}"
 AUTO_TLS_ENV="${AUTO_TLS:-false}"
 TLS_DOMAIN_ENV="${TLS_DOMAIN:-}"
 ACME_EMAIL_ENV="${ACME_EMAIL:-}"
@@ -178,6 +179,7 @@ validate_required_config() {
   if [ "$ENABLE_VLESS_ENV" = "true" ]; then
     validate_positive_integer "VLESS_PORT" "$VLESS_PORT_ENV"
   fi
+  validate_positive_integer "MIXED_PORT" "$MIXED_PORT_ENV"
 
   if [ "$AUTO_TLS_ENV" = "true" ] && [ -z "$TLS_DOMAIN_ENV" ]; then
     echo "[config] TLS_DOMAIN is required when AUTO_TLS=true"
@@ -297,7 +299,8 @@ jq \
   .inbounds |= map(select(
     (.type=="hysteria2" and $enableHy2=="true") or
     (.type=="vless" and $enableVless=="true") or
-    (.type!="hysteria2" and .type!="vless")
+    (.type=="mixed") or
+    (.type!="hysteria2" and .type!="vless" and .type!="mixed")
   )) |
   (.endpoints[] | select(.tag=="warp") | .address) = [$warpAddressV4, $warpAddressV6] |
   (.endpoints[] | select(.tag=="warp") | .private_key) = $warpPrivateKey |

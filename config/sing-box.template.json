@@ -36,6 +36,12 @@
         "certificate_path": "__TLS_CERT_PATH__",
         "key_path": "__TLS_KEY_PATH__"
       }
+    },
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "0.0.0.0",
+      "listen_port": __MIXED_PORT__
     }
   ],
   "endpoints": [
