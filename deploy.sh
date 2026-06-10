@@ -11,6 +11,7 @@ APP_DIR="${APP_DIR:-$APP_DIR_DEFAULT}"
 IMAGE="${IMAGE:-$IMAGE_DEFAULT}"
 HY2_PORT="${HY2_PORT:-32443}"
 VLESS_PORT="${VLESS_PORT:-38443}"
+MIXED_PORT="${MIXED_PORT:-1080}"
 ENABLE_HY2="${ENABLE_HY2:-true}"
 ENABLE_VLESS="${ENABLE_VLESS:-true}"
 AUTO_TLS="${AUTO_TLS:-false}"
@@ -83,6 +84,7 @@ Environment:
 
   HY2_PORT        默认 32443
   VLESS_PORT      默认 38443
+  MIXED_PORT      默认 1080，仅绑定宿主机 127.0.0.1，给本机 HTTP+SOCKS5 代理使用
   AUTH_UUID       可选，固定认证值
   HY2_PASSWORD    可选，覆盖 HY2 密码
   VLESS_UUID      可选，覆盖 VLESS UUID
@@ -517,6 +519,7 @@ collect_bootstrap_inputs() {
   if [[ "$ENABLE_VLESS" == "true" ]]; then
     VLESS_PORT="$(ask_input "VLESS 端口" "$VLESS_PORT")"
   fi
+  MIXED_PORT="$(ask_input "本机 Mixed 代理端口 (HTTP+SOCKS5，仅 127.0.0.1)" "$MIXED_PORT")"
 
   printf "\n可选参数\n" >&2
   AUTH_UUID="$(ask_input "AUTH_UUID (可选，留空自动生成)" "$AUTH_UUID")"
@@ -547,6 +550,7 @@ validate_config() {
   if [[ "$ENABLE_VLESS" == "true" ]]; then
     validate_positive_int "VLESS_PORT" "$VLESS_PORT"
   fi
+  validate_positive_int "MIXED_PORT" "$MIXED_PORT"
   validate_positive_int "TLS_ISSUE_RETRIES" "$TLS_ISSUE_RETRIES"
   validate_positive_int "TLS_RENEW_INTERVAL" "$TLS_RENEW_INTERVAL"
   if [[ "$ENABLE_HY2" != "true" && "$ENABLE_VLESS" != "true" ]]; then
@@ -584,6 +588,8 @@ write_compose() {
     ports_block="${ports_block}
       - \"\${VLESS_PORT:-38443}:\${VLESS_PORT:-38443}/tcp\""
   fi
+  ports_block="${ports_block}
+      - \"127.0.0.1:\${MIXED_PORT:-1080}:\${MIXED_PORT:-1080}/tcp\""
 
   cat >"$COMPOSE_FILE" <<EOF
 services:
@@ -617,6 +623,7 @@ ${ports_block}
     environment:
       - HY2_PORT=\${HY2_PORT:-32443}
       - VLESS_PORT=\${VLESS_PORT:-38443}
+      - MIXED_PORT=\${MIXED_PORT:-1080}
       - ENABLE_HY2=\${ENABLE_HY2:-true}
       - ENABLE_VLESS=\${ENABLE_VLESS:-true}
       - AUTH_UUID=\${AUTH_UUID:-}
@@ -641,6 +648,7 @@ write_env() {
   cat >"$ENV_FILE" <<EOF
 HY2_PORT=$HY2_PORT
 VLESS_PORT=$VLESS_PORT
+MIXED_PORT=$MIXED_PORT
 ENABLE_HY2=$ENABLE_HY2
 ENABLE_VLESS=$ENABLE_VLESS
 AUTO_DOMAIN=$AUTO_DOMAIN
@@ -750,7 +758,7 @@ cmd_show_nodes() {
 
   local cfg
   local hy2_password hy2_port hy2_sni hy2_tag hy2_insecure
-  local vless_uuid vless_port vless_sni vless_tag
+  local vless_uuid vless_port vless_sni vless_tag vless_flow vless_link
   local node_name
   local has_any="false"
   local pass
@@ -778,9 +786,14 @@ cmd_show_nodes() {
     vless_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .listen_port // empty' | head -n1)"
     vless_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tls.server_name // empty' | head -n1)"
     vless_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tag // empty' | head -n1)"
+    vless_flow="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .users[0].flow // empty' | head -n1)"
     if [[ -n "$vless_uuid" && -n "$vless_port" && -n "$vless_sni" ]]; then
       vless_tag="${vless_tag:-vless-${node_name}}"
-      echo "[node] vless://${vless_uuid}@${vless_sni}:${vless_port}?encryption=none&security=tls&sni=${vless_sni}&type=tcp#${vless_tag}"
+      vless_link="vless://${vless_uuid}@${vless_sni}:${vless_port}?encryption=none&security=tls&sni=${vless_sni}&type=tcp"
+      if [[ -n "$vless_flow" ]]; then
+        vless_link="${vless_link}&flow=${vless_flow}"
+      fi
+      echo "[node] ${vless_link}#${vless_tag}"
       has_any="true"
     fi
 

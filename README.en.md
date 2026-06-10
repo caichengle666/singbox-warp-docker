@@ -71,7 +71,7 @@ These can be changed if needed, but the service can still start with defaults:
 
 ## Local proxy entry (MIXED)
 
-sing-box inside the container runs a **`mixed`-type inbound** that **listens on `1080` by default**, supporting both:
+sing-box inside the container runs a **`mixed`-type inbound**. Docker maps it to the host **`127.0.0.1:1080`** by default, supporting both:
 
 - **SOCKS5 proxy**: `socks5://127.0.0.1:1080`
 - **HTTP CONNECT proxy**: `http://127.0.0.1:1080`
@@ -84,12 +84,11 @@ Common uses:
   ```bash
   curl -x socks5://127.0.0.1:1080 https://api.ipify.org
   ```
-- **Tunnel forwarding**: expose `1080` as a public SOCKS5 endpoint via Cloudflare Tunnel (or any reverse proxy)
-- **LAN sharing**: map the container port to host `0.0.0.0:1080` and share with other devices on the same network
+- **SSH forwarding**: when remote temporary access is needed, forward to the host-local `1080` port over SSH
 
-**Port change**: set `MIXED_PORT=xxxx` in `.env`; both container and host ports are updated together.
+**Port change**: set `MIXED_PORT=xxxx` in `.env`; both container and host-local ports are updated together.
 
-> ⚠️ **Security note**: port `1080` has no authentication. **Do not expose it directly to the public internet.** For remote access, use Cloudflare Tunnel (preferably with Access auth) or SSH port forwarding.
+> ⚠️ **Security note**: port `1080` has no authentication and is mapped to `127.0.0.1` by default. Do not change it to `0.0.0.0` for public or LAN exposure.
 
 ## `.env` Examples
 

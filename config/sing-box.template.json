@@ -27,7 +27,8 @@
       "listen_port": __VLESS_PORT__,
       "users": [
         {
-          "uuid": "__VLESS_UUID__"
+          "uuid": "__VLESS_UUID__",
+          "flow": "xtls-rprx-vision"
         }
       ],
       "tls": {

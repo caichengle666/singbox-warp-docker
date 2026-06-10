@@ -20,8 +20,8 @@ services:
       - "${HY2_PORT:-32443}:${HY2_PORT:-32443}/udp"
       # VLESS(TCP)
       - "${VLESS_PORT:-38443}:${VLESS_PORT:-38443}/tcp"
-      # Mixed (HTTP + SOCKS5) 本地代理，可被宿主机或隧道转发使用
-      - "${MIXED_PORT:-1080}:${MIXED_PORT:-1080}/tcp"
+      # Mixed (HTTP + SOCKS5) 本地代理，仅开放给宿主机本地使用
+      - "127.0.0.1:${MIXED_PORT:-1080}:${MIXED_PORT:-1080}/tcp"
     volumes:
       # WARP 账号与 profile 持久化
       - ./data:/var/lib/wgcf

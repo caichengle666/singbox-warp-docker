@@ -43,6 +43,8 @@ jobs:
           rendered="$(cat config/sing-box.template.json)"
           rendered="${rendered//__HY2_PORT__/32443}"
           rendered="${rendered//__VLESS_PORT__/38443}"
+          rendered="${rendered//__HY2_TAG__/hy2-test}"
+          rendered="${rendered//__VLESS_TAG__/vless-test}"
           rendered="${rendered//__HY2_PASSWORD__/dummy_hy2_password}"
           rendered="${rendered//__VLESS_UUID__/11111111-1111-1111-1111-111111111111}"
           rendered="${rendered//__TLS_DOMAIN__/example.com}"

@@ -338,7 +338,12 @@ VLESS_SNI="$(jq -r '.inbounds[] | select(.type=="vless") | .tls.server_name // e
 VLESS_TAG="$(jq -r '.inbounds[] | select(.type=="vless") | .tag // "vless"' "$SB_CONFIG" | head -n1)"
 
 if [ -n "$VLESS_UUID" ] && [ -n "$VLESS_PORT" ] && [ -n "$VLESS_SNI" ]; then
-  VLESS_LINK="vless://${VLESS_UUID}@${VLESS_SNI}:${VLESS_PORT}?encryption=none&security=tls&sni=${VLESS_SNI}&type=tcp#${VLESS_TAG}"
+  VLESS_FLOW="$(jq -r '.inbounds[] | select(.type=="vless") | .users[0].flow // empty' "$SB_CONFIG" | head -n1)"
+  VLESS_LINK="vless://${VLESS_UUID}@${VLESS_SNI}:${VLESS_PORT}?encryption=none&security=tls&sni=${VLESS_SNI}&type=tcp"
+  if [ -n "$VLESS_FLOW" ]; then
+    VLESS_LINK="${VLESS_LINK}&flow=${VLESS_FLOW}"
+  fi
+  VLESS_LINK="${VLESS_LINK}#${VLESS_TAG}"
   echo "[node] $VLESS_LINK"
 else
   echo "[node] skipped: unable to build vless link from config"
