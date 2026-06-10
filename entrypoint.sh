@@ -294,9 +294,9 @@ jq \
   (.inbounds[] | select(.type=="vless") | .users[0].uuid) = $vlessUuid |
   (.inbounds[] | select(.type=="hysteria2") | .tag) = $hy2Tag |
   (.inbounds[] | select(.type=="vless") | .tag) = $vlessTag |
-  (.inbounds[] | .tls.server_name) = $tlsDomain |
-  (.inbounds[] | .tls.certificate_path) = $tlsCertPath |
-  (.inbounds[] | .tls.key_path) = $tlsKeyPath |
+  (.inbounds[] | select(.type=="hysteria2" or .type=="vless") | .tls.server_name) = $tlsDomain |
+  (.inbounds[] | select(.type=="hysteria2" or .type=="vless") | .tls.certificate_path) = $tlsCertPath |
+  (.inbounds[] | select(.type=="hysteria2" or .type=="vless") | .tls.key_path) = $tlsKeyPath |
   .inbounds |= map(select(
     (.type=="hysteria2" and $enableHy2=="true") or
     (.type=="vless" and $enableVless=="true") or
