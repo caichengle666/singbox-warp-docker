@@ -35,6 +35,32 @@ validate_positive_integer() {
   fi
 }
 
+validate_port() {
+  local name="$1"
+  local value="$2"
+  validate_positive_integer "$name" "$value"
+  if (( 10#$value > 65535 )); then
+    echo "[config] $name must be between 1 and 65535, got: $value"
+    exit 1
+  fi
+}
+
+retry_command() {
+  local label="$1"
+  shift
+  local attempt=1
+  local max_attempts=3
+  while ! "$@"; do
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      echo "[$label] failed after $max_attempts attempts"
+      return 1
+    fi
+    echo "[$label] attempt $attempt failed, retrying in 5s"
+    sleep 5
+    attempt=$((attempt + 1))
+  done
+}
+
 normalize_name() {
   local text="$1"
   text="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
@@ -174,12 +200,28 @@ validate_required_config() {
   validate_positive_integer "TLS_ISSUE_RETRIES" "$TLS_ISSUE_RETRIES_ENV"
   validate_positive_integer "TLS_RENEW_INTERVAL" "$TLS_RENEW_INTERVAL_ENV"
   if [ "$ENABLE_HY2_ENV" = "true" ]; then
-    validate_positive_integer "HY2_PORT" "$HY2_PORT_ENV"
+    validate_port "HY2_PORT" "$HY2_PORT_ENV"
   fi
   if [ "$ENABLE_VLESS_ENV" = "true" ]; then
-    validate_positive_integer "VLESS_PORT" "$VLESS_PORT_ENV"
+    validate_port "VLESS_PORT" "$VLESS_PORT_ENV"
   fi
-  validate_positive_integer "MIXED_PORT" "$MIXED_PORT_ENV"
+  validate_port "MIXED_PORT" "$MIXED_PORT_ENV"
+
+  if { [ "$ENABLE_HY2_ENV" = "true" ] && [ "$MIXED_PORT_ENV" = "$HY2_PORT_ENV" ]; } ||
+     { [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$MIXED_PORT_ENV" = "$VLESS_PORT_ENV" ]; } ||
+     { [ "$ENABLE_HY2_ENV" = "true" ] && [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$HY2_PORT_ENV" = "$VLESS_PORT_ENV" ]; }; then
+    echo "[config] HY2, VLESS and mixed ports must be different"
+    exit 1
+  fi
+
+  if [ "$ENABLE_VLESS_ENV" = "true" ]; then
+    local effective_vless_uuid="${VLESS_UUID_ENV:-$AUTH_UUID_ENV}"
+    if [ -n "$effective_vless_uuid" ] &&
+       ! [[ "$effective_vless_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+      echo "[config] VLESS_UUID/AUTH_UUID is not a valid UUID"
+      exit 1
+    fi
+  fi
 
   if [ "$AUTO_TLS_ENV" = "true" ] && [ -z "$TLS_DOMAIN_ENV" ]; then
     echo "[config] TLS_DOMAIN is required when AUTO_TLS=true"
@@ -205,7 +247,7 @@ ensure_tls_cert
 
 if [ ! -f "$WGCF_DIR/wgcf-account.toml" ]; then
   echo "[warp] no account found, registering new account"
-  wgcf register --accept-tos
+  retry_command warp-register wgcf register --accept-tos
 else
   echo "[warp] using existing account"
 fi
@@ -215,7 +257,7 @@ if [ -n "$WARP_LICENSE_KEY_ENV" ]; then
   current_warp_license_key="$(awk -F' = ' '/^license_key/{print $2}' "$WGCF_DIR/wgcf-account.toml" | tr -d '"[:space:]' | head -n1)"
   if [ "$current_warp_license_key" != "$WARP_LICENSE_KEY_ENV" ]; then
     echo "[warp] applying WARP license key update"
-    wgcf update --license-key "$WARP_LICENSE_KEY_ENV"
+    retry_command warp-license wgcf update --license-key "$WARP_LICENSE_KEY_ENV"
     PROFILE_NEEDS_REGEN="true"
   else
     echo "[warp] existing license key already matches"
@@ -224,7 +266,7 @@ fi
 
 if [ ! -f "$WGCF_DIR/wgcf-profile.conf" ] || [ "$PROFILE_NEEDS_REGEN" = "true" ]; then
   echo "[warp] generating profile"
-  wgcf generate
+  retry_command warp-profile wgcf generate
 fi
 
 profile="$WGCF_DIR/wgcf-profile.conf"

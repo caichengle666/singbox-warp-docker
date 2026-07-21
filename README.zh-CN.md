@@ -38,6 +38,8 @@ curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/m
 swd
 ```
 
+首次安装使用自动 TLS。运行前请在 [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens) 创建具有对应 Zone `DNS:Edit` 权限的 Token。脚本会隐藏 Token 输入，并将其保存到部署目录的 `.env` 中。
+
 ## 必填项
 
 以下内容必须由你自己填写，否则容器无法正常对外提供服务：
@@ -259,6 +261,10 @@ CF_Zone_ID=
 - `./data`：保存 WARP 注册信息和生成的 profile
 - `./acme`：保存 ACME 账户和续期状态
 - `./certs`：保存 TLS 证书
+- `.env`：保存域名、端口、协议开关和认证信息，权限为 `600`
+- `.deploy-state`：保存更新前的镜像 digest 和修改前的配置备份
+
+重启或重新创建容器时，入口脚本会使用以上数据重新生成 sing-box 运行配置，因此 WARP 账号、证书和节点认证信息不会因容器重启而丢失。删除部署目录或这些持久化文件后无法自动恢复。
 
 ## 脚本化工业部署
 
@@ -279,28 +285,21 @@ curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/m
 说明：
 
 - 脚本只提供交互模式（执行后逐项提示输入）
-- 启动后提供菜单：部署/更新、查看节点信息、查看运行状态、退出
-- 交互顺序优先填写 TLS / 域名 / `CF_Token`，再填写协议选择（`HY2` / `VLESS`）、端口和 WARP 参数
+- 菜单提供首次安装、更新镜像、修改配置、查看节点、查看状态、查看日志、重启服务和回滚镜像
+- 首次安装会先提示填写 `CF_Token`，再选择域名方式、协议和端口；镜像、认证值等低频参数位于高级选项
+- 更新镜像不会覆盖 `.env`；修改配置会先读取现有值，并在写入前显示不含敏感信息的摘要
+- 更新后的容器未通过健康检查时，脚本会自动恢复更新前记录的镜像 digest
+- 修改配置前会备份 `.env` 和 Compose；新配置启动失败时自动恢复旧配置
+- 回滚镜像仅恢复更新前记录的容器镜像，不回滚证书或 WARP 数据
 - 自动生成 `docker-compose.yml` 与 `.env`
 - 自动拉取镜像并启动容器，最后执行健康检查
 - 自动生成的 Compose 已限制 Docker 日志轮转：单文件 `10m`，保留 `3` 个文件，避免长期运行撑满磁盘
 
-示例：
+使用方式：
 
 ```bash
 chmod +x ./deploy.sh
-
-# 首次初始化
-APP_DIR=/opt/singbox-warp AUTO_TLS=false TLS_DOMAIN=your.domain ./deploy.sh init
-
-# 编辑 /opt/singbox-warp/.env 后部署
-APP_DIR=/opt/singbox-warp ./deploy.sh deploy
-
-# 查看状态
-APP_DIR=/opt/singbox-warp ./deploy.sh status
-
-# 回滚（自动用上次记录）
-APP_DIR=/opt/singbox-warp ./deploy.sh rollback
+./deploy.sh
 ```
 
 凭据放置建议：

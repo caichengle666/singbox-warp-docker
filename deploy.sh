@@ -36,12 +36,16 @@ COMPOSE_FILE="$APP_DIR/$COMPOSE_FILE_NAME"
 ENV_FILE="$APP_DIR/$ENV_FILE_NAME"
 STATE_DIR="$APP_DIR/$STATE_DIR_NAME"
 ROLLBACK_FILE="$STATE_DIR/last_image.txt"
+CONFIG_BACKUP_DIR="$STATE_DIR/config-backup"
+UPDATE_IMAGE_FILE="$STATE_DIR/update_image.txt"
 
 refresh_paths() {
   COMPOSE_FILE="$APP_DIR/$COMPOSE_FILE_NAME"
   ENV_FILE="$APP_DIR/$ENV_FILE_NAME"
   STATE_DIR="$APP_DIR/$STATE_DIR_NAME"
   ROLLBACK_FILE="$STATE_DIR/last_image.txt"
+  CONFIG_BACKUP_DIR="$STATE_DIR/config-backup"
+  UPDATE_IMAGE_FILE="$STATE_DIR/update_image.txt"
 }
 
 log() { printf '[deploy] %s\n' "$*"; }
@@ -186,15 +190,40 @@ ask_choice() {
   done
 }
 
+ask_secret() {
+  local prompt="$1"
+  local current="${2:-}"
+  local value=""
+  if [[ -n "$current" ]]; then
+    printf "%s [已配置，留空保持不变]: " "$prompt" >&2
+  else
+    printf "%s: " "$prompt" >&2
+  fi
+  if [[ "${FORCE_STDIN:-0}" == "1" ]]; then
+    read -r value || { err "未能从 stdin 读取交互输入"; exit 1; }
+  elif [[ -r /dev/tty ]]; then
+    read -r -s value < /dev/tty || { err "未能从终端读取交互输入"; exit 1; }
+    printf '\n' >&2
+  else
+    read -r value || { err "未检测到交互终端"; exit 1; }
+  fi
+  printf '%s' "${value:-$current}"
+}
+
 ask_menu_choice() {
   local value=""
   while true; do
     printf "\n请选择操作:\n" >&2
-    printf "  1) 部署 / 更新\n" >&2
-    printf "  2) 查看节点链接\n" >&2
-    printf "  3) 查看运行状态\n" >&2
-    printf "  4) 退出\n" >&2
-    printf "请输入 [1-4]: " >&2
+    printf "  1) 首次安装\n" >&2
+    printf "  2) 更新镜像\n" >&2
+    printf "  3) 修改配置\n" >&2
+    printf "  4) 查看节点\n" >&2
+    printf "  5) 查看状态\n" >&2
+    printf "  6) 查看日志\n" >&2
+    printf "  7) 重启服务\n" >&2
+    printf "  8) 回滚镜像\n" >&2
+    printf "  9) 退出\n" >&2
+    printf "请输入 [1-9]: " >&2
     if [[ "${FORCE_STDIN:-0}" == "1" ]]; then
       if ! read -r value; then
         err "未能从 stdin 读取交互输入"
@@ -212,11 +241,11 @@ ask_menu_choice() {
       fi
     fi
     if [[ -z "$value" ]]; then
-      err "未输入内容，请输入 1-4"
+      err "未输入内容，请输入 1-9"
       continue
     fi
     case "$value" in
-      1|2|3|4)
+      1|2|3|4|5|6|7|8|9)
         printf '%s' "$value"
         return 0
         ;;
@@ -487,28 +516,61 @@ ensure_docker() {
   log "docker installation completed"
 }
 
-collect_bootstrap_inputs() {
-  APP_DIR="$(ask_input "部署目录" "$APP_DIR")"
-  refresh_paths
-  IMAGE="$(ask_input "镜像地址" "$IMAGE")"
+ensure_host_tools() {
+  local missing=()
+  command -v curl >/dev/null 2>&1 || missing+=(curl)
+  command -v jq >/dev/null 2>&1 || missing+=(jq)
+  [[ "${#missing[@]}" -eq 0 ]] && return 0
+  command -v apt-get >/dev/null 2>&1 || {
+    err "缺少命令: ${missing[*]}，请先手动安装"
+    exit 1
+  }
+  log "正在安装必要工具: ${missing[*]}"
+  run_root apt-get update -y
+  run_root apt-get install -y "${missing[@]}"
+}
 
-  printf "\nTLS / 域名配置\n" >&2
-  AUTO_TLS="$(normalize_bool "$(ask_choice "启用 AUTO_TLS (true/false)" "$AUTO_TLS")")"
-  if [[ "$AUTO_TLS" == "true" ]]; then
-    AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
-    if [[ "$AUTO_DOMAIN" == "true" ]]; then
-      BASE_DOMAIN="$(ask_input "主域名 (example: 1100.ccwu.cc)" "$BASE_DOMAIN")"
-    else
-      TLS_DOMAIN="$(ask_input "TLS 域名 (AUTO_TLS=true 时必填)" "$TLS_DOMAIN")"
+load_existing_env() {
+  [[ -f "$ENV_FILE" ]] || return 0
+  local key value
+  while IFS='=' read -r key value || [[ -n "$key" ]]; do
+    key="${key%$'\r'}"
+    value="${value%$'\r'}"
+    case "$key" in
+      HY2_PORT|VLESS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|CF_Token|CF_Account_ID|CF_Zone_ID)
+        printf -v "$key" '%s' "$value"
+        ;;
+    esac
+  done < "$ENV_FILE"
+}
+
+collect_bootstrap_inputs() {
+  local mode="${1:-install}"
+  if [[ "$mode" == "install" ]]; then
+    APP_DIR="$(ask_input "部署目录" "$APP_DIR")"
+    refresh_paths
+    if [[ -f "$ENV_FILE" || -f "$COMPOSE_FILE" ]]; then
+      err "部署目录已有配置，请从主菜单选择 '修改配置'"
+      return 1
     fi
-    CF_Token="$(ask_input "CF_Token (AUTO_TLS=true 时必填)" "$CF_Token")"
-    ACME_EMAIL="$(ask_input "ACME_EMAIL (建议填写)" "$ACME_EMAIL")"
-    CF_Account_ID="$(ask_input "CF_Account_ID (可选)" "$CF_Account_ID")"
-    CF_Zone_ID="$(ask_input "CF_Zone_ID (可选)" "$CF_Zone_ID")"
-  else
-    AUTO_DOMAIN="false"
-    TLS_DOMAIN="$(ask_input "TLS 域名 (手动证书模式用于节点链接)" "$TLS_DOMAIN")"
   fi
+
+  printf "\n自动 TLS 配置\n" >&2
+  printf "需要 Cloudflare API Token（Zone / DNS / Edit 权限）。\n" >&2
+  printf "申请地址: https://dash.cloudflare.com/profile/api-tokens\n" >&2
+  AUTO_TLS="true"
+  while [[ -z "$CF_Token" ]]; do
+    CF_Token="$(ask_secret "Cloudflare API Token" "$CF_Token")"
+    [[ -n "$CF_Token" ]] || err "Cloudflare API Token 不能为空"
+  done
+  AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
+  if [[ "$AUTO_DOMAIN" == "true" ]]; then
+    BASE_DOMAIN="$(ask_input "Cloudflare 主域名 (example.com)" "$BASE_DOMAIN")"
+    TLS_DOMAIN=""
+  else
+    TLS_DOMAIN="$(ask_input "TLS 域名" "$TLS_DOMAIN")"
+  fi
+  ACME_EMAIL="$(ask_input "证书通知邮箱 (建议填写)" "$ACME_EMAIL")"
 
   printf "\n协议 / 端口配置\n" >&2
   ENABLE_HY2="$(normalize_bool "$(ask_choice "启用 HY2 (y/n 或 true/false)" "${ENABLE_HY2}")")"
@@ -521,13 +583,28 @@ collect_bootstrap_inputs() {
   fi
   MIXED_PORT="$(ask_input "本机 Mixed 代理端口 (HTTP+SOCKS5，仅 127.0.0.1)" "$MIXED_PORT")"
 
-  printf "\n可选参数\n" >&2
-  AUTH_UUID="$(ask_input "AUTH_UUID (可选，留空自动生成)" "$AUTH_UUID")"
-  HY2_PASSWORD="$(ask_input "HY2_PASSWORD (可选)" "$HY2_PASSWORD")"
-  VLESS_UUID="$(ask_input "VLESS_UUID (可选)" "$VLESS_UUID")"
-  WARP_LICENSE_KEY="$(ask_input "WARP_LICENSE_KEY (可选)" "$WARP_LICENSE_KEY")"
-  TLS_ISSUE_RETRIES="$(ask_input "TLS 签发重试次数" "$TLS_ISSUE_RETRIES")"
-  TLS_RENEW_INTERVAL="$(ask_input "TLS 续期间隔秒数" "$TLS_RENEW_INTERVAL")"
+  if [[ "$(normalize_bool "$(ask_choice "配置高级选项 (y/n)" "n")")" == "true" ]]; then
+    IMAGE="$(ask_input "镜像地址" "$IMAGE")"
+    AUTH_UUID="$(ask_input "AUTH_UUID (留空自动生成)" "$AUTH_UUID")"
+    HY2_PASSWORD="$(ask_secret "HY2_PASSWORD (可选)" "$HY2_PASSWORD")"
+    VLESS_UUID="$(ask_input "VLESS_UUID (可选)" "$VLESS_UUID")"
+    WARP_LICENSE_KEY="$(ask_secret "WARP_LICENSE_KEY (可选)" "$WARP_LICENSE_KEY")"
+    TLS_ISSUE_RETRIES="$(ask_input "TLS 签发重试次数" "$TLS_ISSUE_RETRIES")"
+    TLS_RENEW_INTERVAL="$(ask_input "TLS 续期间隔秒数" "$TLS_RENEW_INTERVAL")"
+  fi
+}
+
+confirm_config() {
+  local domain_label="$TLS_DOMAIN"
+  [[ "$AUTO_DOMAIN" == "true" ]] && domain_label="自动生成 (*.$BASE_DOMAIN)"
+  printf "\n配置摘要\n" >&2
+  printf "  部署目录: %s\n" "$APP_DIR" >&2
+  printf "  TLS 域名: %s\n" "$domain_label" >&2
+  printf "  Cloudflare Token: 已配置（不会显示）\n" >&2
+  printf "  HY2: %s (端口 %s)\n" "$ENABLE_HY2" "$HY2_PORT" >&2
+  printf "  VLESS: %s (端口 %s)\n" "$ENABLE_VLESS" "$VLESS_PORT" >&2
+  printf "  Mixed 端口: %s (仅本机)\n" "$MIXED_PORT" >&2
+  [[ "$(normalize_bool "$(ask_choice "确认并继续 (y/n)" "y")")" == "true" ]]
 }
 
 validate_positive_int() {
@@ -539,22 +616,69 @@ validate_positive_int() {
   }
 }
 
+validate_port() {
+  local name="$1"
+  local value="$2"
+  validate_positive_int "$name" "$value"
+  (( 10#$value <= 65535 )) || {
+    err "$name 必须在 1-65535 范围内，当前值: $value"
+    exit 1
+  }
+}
+
+validate_env_value() {
+  local name="$1"
+  local value="$2"
+  [[ "$value" =~ ^[A-Za-z0-9_./:@%+,-]*$ ]] || {
+    err "$name 包含不支持的字符；请仅使用字母、数字及 _ . / : @ % + , -"
+    exit 1
+  }
+}
+
 validate_config() {
   validate_true_false "ENABLE_HY2" "$ENABLE_HY2"
   validate_true_false "ENABLE_VLESS" "$ENABLE_VLESS"
   validate_true_false "AUTO_DOMAIN" "$AUTO_DOMAIN"
   validate_bool "$AUTO_TLS"
   if [[ "$ENABLE_HY2" == "true" ]]; then
-    validate_positive_int "HY2_PORT" "$HY2_PORT"
+    validate_port "HY2_PORT" "$HY2_PORT"
   fi
   if [[ "$ENABLE_VLESS" == "true" ]]; then
-    validate_positive_int "VLESS_PORT" "$VLESS_PORT"
+    validate_port "VLESS_PORT" "$VLESS_PORT"
   fi
-  validate_positive_int "MIXED_PORT" "$MIXED_PORT"
+  validate_port "MIXED_PORT" "$MIXED_PORT"
   validate_positive_int "TLS_ISSUE_RETRIES" "$TLS_ISSUE_RETRIES"
   validate_positive_int "TLS_RENEW_INTERVAL" "$TLS_RENEW_INTERVAL"
+  validate_env_value "BASE_DOMAIN" "$BASE_DOMAIN"
+  validate_env_value "TLS_DOMAIN" "$TLS_DOMAIN"
+  validate_env_value "NODE_NAME" "$NODE_NAME"
+  validate_env_value "ACME_EMAIL" "$ACME_EMAIL"
+  validate_env_value "IMAGE" "$IMAGE"
+  validate_env_value "TLS_CERT_PATH" "$TLS_CERT_PATH"
+  validate_env_value "TLS_KEY_PATH" "$TLS_KEY_PATH"
+  validate_env_value "AUTH_UUID" "$AUTH_UUID"
+  validate_env_value "HY2_PASSWORD" "$HY2_PASSWORD"
+  validate_env_value "VLESS_UUID" "$VLESS_UUID"
+  validate_env_value "WARP_LICENSE_KEY" "$WARP_LICENSE_KEY"
+  validate_env_value "CF_Token" "$CF_Token"
+  validate_env_value "CF_Account_ID" "$CF_Account_ID"
+  validate_env_value "CF_Zone_ID" "$CF_Zone_ID"
   if [[ "$ENABLE_HY2" != "true" && "$ENABLE_VLESS" != "true" ]]; then
     err "至少要启用一种协议 (ENABLE_HY2/ENABLE_VLESS)"
+    exit 1
+  fi
+  if [[ "$ENABLE_VLESS" == "true" ]]; then
+    local effective_vless_uuid="${VLESS_UUID:-$AUTH_UUID}"
+    if [[ -n "$effective_vless_uuid" ]] &&
+       ! [[ "$effective_vless_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+      err "VLESS_UUID/AUTH_UUID 不是有效的 UUID"
+      exit 1
+    fi
+  fi
+  if [[ "$ENABLE_HY2" == "true" && "$MIXED_PORT" == "$HY2_PORT" ]] ||
+     [[ "$ENABLE_VLESS" == "true" && "$MIXED_PORT" == "$VLESS_PORT" ]] ||
+     [[ "$ENABLE_HY2" == "true" && "$ENABLE_VLESS" == "true" && "$HY2_PORT" == "$VLESS_PORT" ]]; then
+    err "HY2、VLESS 和 Mixed 端口不能重复"
     exit 1
   fi
 
@@ -669,6 +793,7 @@ CF_Token=$CF_Token
 CF_Account_ID=$CF_Account_ID
 CF_Zone_ID=$CF_Zone_ID
 EOF
+  chmod 600 "$ENV_FILE"
   log "created .env: $ENV_FILE"
 }
 
@@ -682,11 +807,43 @@ write_env_if_missing() {
 
 record_current_image_for_rollback() {
   mkdir -p "$STATE_DIR"
-  if docker inspect singbox-warp --format '{{.Config.Image}}' >/dev/null 2>&1; then
-    docker inspect singbox-warp --format '{{.Config.Image}}' >"$ROLLBACK_FILE" || true
+  if docker inspect singbox-warp >/dev/null 2>&1; then
+    local image_id repo_digest configured_image
+    image_id="$(docker inspect singbox-warp --format '{{.Image}}')"
+    configured_image="$(docker inspect singbox-warp --format '{{.Config.Image}}')"
+    if [[ "$configured_image" != sha256:* && "$configured_image" != *@sha256:* ]]; then
+      printf '%s\n' "$configured_image" >"$UPDATE_IMAGE_FILE"
+    fi
+    repo_digest="$(docker image inspect "$image_id" --format '{{index .RepoDigests 0}}' 2>/dev/null || true)"
+    if [[ -n "$repo_digest" && "$repo_digest" != "<no value>" ]]; then
+      printf '%s\n' "$repo_digest" >"$ROLLBACK_FILE"
+    else
+      printf '%s\n' "$image_id" >"$ROLLBACK_FILE"
+    fi
   elif [[ -f "$COMPOSE_FILE" ]]; then
     grep -E '^\s*image:\s*' "$COMPOSE_FILE" | head -n1 | sed -E 's/^\s*image:\s*//' >"$ROLLBACK_FILE" || true
   fi
+}
+
+backup_config() {
+  mkdir -p "$CONFIG_BACKUP_DIR"
+  cp -f "$ENV_FILE" "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME"
+  cp -f "$COMPOSE_FILE" "$CONFIG_BACKUP_DIR/$COMPOSE_FILE_NAME"
+}
+
+restore_config() {
+  [[ -f "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME" && -f "$CONFIG_BACKUP_DIR/$COMPOSE_FILE_NAME" ]] || {
+    err "没有可恢复的配置备份"
+    return 1
+  }
+  cp -f "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME" "$ENV_FILE"
+  cp -f "$CONFIG_BACKUP_DIR/$COMPOSE_FILE_NAME" "$COMPOSE_FILE"
+  chmod 600 "$ENV_FILE"
+  (
+    cd "$APP_DIR"
+    docker compose up -d
+  )
+  log "已恢复修改前的配置"
 }
 
 wait_healthy() {
@@ -703,7 +860,7 @@ wait_healthy() {
   err "container is not healthy"
   docker ps --format '{{.Names}} {{.Status}} {{.Image}}' | grep '^singbox-warp ' || true
   docker logs --tail 80 singbox-warp || true
-  exit 1
+  return 1
 }
 
 cmd_init() {
@@ -720,8 +877,7 @@ cmd_deploy() {
   [[ -f "$COMPOSE_FILE" ]] || { err "缺少 compose 文件: $COMPOSE_FILE"; exit 1; }
   [[ -f "$ENV_FILE" ]] || { err "缺少环境变量文件: $ENV_FILE"; exit 1; }
 
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
+  load_existing_env
   validate_config
   prepare_auto_domain
   finalize_node_name
@@ -733,7 +889,7 @@ cmd_deploy() {
     docker compose pull
     docker compose up -d
   )
-  wait_healthy
+  wait_healthy || return 1
   log "部署完成"
 }
 
@@ -812,34 +968,38 @@ cmd_show_nodes() {
   exit 1
 }
 
-cmd_rollback() {
-  need_cmd docker
-  local rollback_image="${1:-}"
-  if [[ -z "$rollback_image" ]]; then
-    [[ -f "$ROLLBACK_FILE" ]] || {
-      err "未找到回滚镜像。请手动传入: $0 rollback <image|digest>"
-      exit 1
-    }
-    rollback_image="$(cat "$ROLLBACK_FILE")"
-  fi
-
+apply_rollback_image() {
+  local rollback_image="$1"
   [[ -f "$COMPOSE_FILE" ]] || { err "缺少 compose 文件: $COMPOSE_FILE"; exit 1; }
-  sed -i -E "s#^(\s*image:\s*).+#\1${rollback_image}#" "$COMPOSE_FILE"
+  sed -i -E "s#^([[:space:]]*image:[[:space:]]*).+#\1${rollback_image}#" "$COMPOSE_FILE"
+  if ! docker image inspect "$rollback_image" >/dev/null 2>&1; then
+    docker pull "$rollback_image"
+  fi
   (
     cd "$APP_DIR"
-    docker compose pull
     docker compose up -d
   )
-  wait_healthy
+  wait_healthy || return 1
   log "回滚完成: $rollback_image"
 }
 
+cmd_rollback() {
+  need_cmd docker
+  [[ -s "$ROLLBACK_FILE" ]] || {
+    err "未找到可回滚的镜像记录，请先执行一次 '更新镜像'"
+    return 1
+  }
+  apply_rollback_image "$(cat "$ROLLBACK_FILE")"
+}
+
 cmd_bootstrap() {
-  collect_bootstrap_inputs
+  collect_bootstrap_inputs install
   validate_config
+  confirm_config || { log "已取消安装"; return 0; }
+  ensure_docker
+  ensure_host_tools
   prepare_auto_domain
   finalize_node_name
-  ensure_docker
 
   mkdir -p "$APP_DIR"/{data,certs,acme}
   write_compose
@@ -850,8 +1010,83 @@ cmd_bootstrap() {
     docker compose pull
     docker compose up -d
   )
-  wait_healthy
+  wait_healthy || {
+    err "首次安装未通过健康检查，请根据上方日志修正配置后重试"
+    return 1
+  }
   log "初始化部署完成: $APP_DIR"
+}
+
+cmd_update_image() {
+  need_cmd docker
+  [[ -f "$COMPOSE_FILE" && -f "$ENV_FILE" ]] || {
+    err "未找到现有部署，请先执行首次安装"
+    return 1
+  }
+  if [[ -s "$UPDATE_IMAGE_FILE" ]] && grep -Eq '^[[:space:]]*image:[[:space:]]*([^[:space:]]+@sha256:|sha256:)' "$COMPOSE_FILE"; then
+    sed -i -E "s#^([[:space:]]*image:[[:space:]]*).+#\1$(cat "$UPDATE_IMAGE_FILE")#" "$COMPOSE_FILE"
+  fi
+  record_current_image_for_rollback
+  if ! (
+    cd "$APP_DIR"
+    docker compose pull
+    docker compose up -d
+  ); then
+    err "镜像更新失败，正在恢复旧镜像"
+    apply_rollback_image "$(cat "$ROLLBACK_FILE")"
+    return 1
+  fi
+  if ! wait_healthy; then
+    err "新镜像健康检查失败，正在恢复旧镜像"
+    apply_rollback_image "$(cat "$ROLLBACK_FILE")"
+    return 1
+  fi
+  log "镜像更新完成，现有配置未改变"
+}
+
+cmd_edit_config() {
+  [[ -f "$ENV_FILE" && -f "$COMPOSE_FILE" ]] || {
+    err "未找到现有部署，请先执行首次安装"
+    return 1
+  }
+  load_existing_env
+  collect_bootstrap_inputs edit
+  validate_config
+  confirm_config || { log "已取消修改"; return 0; }
+  backup_config
+  ensure_docker
+  ensure_host_tools
+  prepare_auto_domain
+  finalize_node_name
+  write_compose
+  write_env
+  if ! (
+    cd "$APP_DIR"
+    docker compose up -d
+  ); then
+    err "应用新配置失败，正在恢复旧配置"
+    restore_config || true
+    return 1
+  fi
+  if ! wait_healthy; then
+    err "新配置健康检查失败，正在恢复旧配置"
+    restore_config || true
+    wait_healthy || true
+    return 1
+  fi
+  log "配置修改完成"
+}
+
+cmd_logs() {
+  need_cmd docker
+  docker logs --tail 100 -f singbox-warp || true
+}
+
+cmd_restart() {
+  need_cmd docker
+  docker restart singbox-warp >/dev/null
+  wait_healthy || return 1
+  log "服务重启完成"
 }
 
 main() {
@@ -865,13 +1100,20 @@ main() {
     usage
     exit 1
   fi
-  action="$(ask_menu_choice)"
-  case "$action" in
-    1) cmd_bootstrap ;;
-    2) cmd_show_nodes ;;
-    3) cmd_status ;;
-    4) log "退出" ;;
-  esac
+  while true; do
+    action="$(ask_menu_choice)"
+    case "$action" in
+      1) cmd_bootstrap || true ;;
+      2) cmd_update_image || true ;;
+      3) cmd_edit_config || true ;;
+      4) cmd_show_nodes || true ;;
+      5) cmd_status || true ;;
+      6) cmd_logs ;;
+      7) cmd_restart || true ;;
+      8) cmd_rollback || true ;;
+      9) log "退出"; return 0 ;;
+    esac
+  done
 }
 
 main "$@"
