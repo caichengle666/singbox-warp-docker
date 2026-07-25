@@ -2,11 +2,13 @@
 set -euo pipefail
 
 APP_DIR_DEFAULT="/opt/singbox-warp"
+ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
 COMPOSE_FILE_NAME="docker-compose.yml"
 ENV_FILE_NAME=".env"
 STATE_DIR_NAME=".deploy-state"
 
+APP_DIR_EXPLICIT="${APP_DIR+x}"
 APP_DIR="${APP_DIR:-$APP_DIR_DEFAULT}"
 IMAGE="${IMAGE:-$IMAGE_DEFAULT}"
 HY2_PORT="${HY2_PORT:-32443}"
@@ -111,6 +113,32 @@ run_root() {
   else
     err "执行以下命令需要 root 权限: $*"
     exit 1
+  fi
+}
+
+load_active_app_dir() {
+  [[ -z "$APP_DIR_EXPLICIT" && -r "$ACTIVE_INSTANCE_FILE" ]] || return 0
+  local saved_dir
+  saved_dir="$(head -n1 "$ACTIVE_INSTANCE_FILE" | tr -d '\r\n')"
+  if [[ "$saved_dir" == /* ]]; then
+    APP_DIR="$saved_dir"
+    refresh_paths
+  else
+    err "忽略无效的部署目录记录: $ACTIVE_INSTANCE_FILE"
+  fi
+}
+
+persist_active_app_dir() {
+  if is_root; then
+    install -d -m 0755 "$(dirname "$ACTIVE_INSTANCE_FILE")"
+    printf '%s\n' "$APP_DIR" > "$ACTIVE_INSTANCE_FILE"
+    chmod 0644 "$ACTIVE_INSTANCE_FILE"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo install -d -m 0755 "$(dirname "$ACTIVE_INSTANCE_FILE")"
+    printf '%s\n' "$APP_DIR" | sudo tee "$ACTIVE_INSTANCE_FILE" >/dev/null
+    sudo chmod 0644 "$ACTIVE_INSTANCE_FILE"
+  else
+    err "无法记录部署目录；以后请使用 APP_DIR=$APP_DIR swd"
   fi
 }
 
@@ -219,11 +247,12 @@ ask_menu_choice() {
     printf "  3) 修改配置\n" >&2
     printf "  4) 查看节点\n" >&2
     printf "  5) 查看状态\n" >&2
-    printf "  6) 查看日志\n" >&2
-    printf "  7) 重启服务\n" >&2
-    printf "  8) 回滚镜像\n" >&2
-    printf "  9) 退出\n" >&2
-    printf "请输入 [1-9]: " >&2
+    printf "  6) 诊断检查\n" >&2
+    printf "  7) 查看日志\n" >&2
+    printf "  8) 重启服务\n" >&2
+    printf "  9) 回滚镜像\n" >&2
+    printf " 10) 退出\n" >&2
+    printf "请输入 [1-10]: " >&2
     if [[ "${FORCE_STDIN:-0}" == "1" ]]; then
       if ! read -r value; then
         err "未能从 stdin 读取交互输入"
@@ -241,11 +270,11 @@ ask_menu_choice() {
       fi
     fi
     if [[ -z "$value" ]]; then
-      err "未输入内容，请输入 1-9"
+      err "未输入内容，请输入 1-10"
       continue
     fi
     case "$value" in
-      1|2|3|4|5|6|7|8|9)
+      1|2|3|4|5|6|7|8|9|10)
         printf '%s' "$value"
         return 0
         ;;
@@ -559,6 +588,7 @@ collect_bootstrap_inputs() {
   printf "需要 Cloudflare API Token（Zone / DNS / Edit 权限）。\n" >&2
   printf "申请地址: https://dash.cloudflare.com/profile/api-tokens\n" >&2
   AUTO_TLS="true"
+  CF_Token="$(ask_secret "Cloudflare API Token" "$CF_Token")"
   while [[ -z "$CF_Token" ]]; do
     CF_Token="$(ask_secret "Cloudflare API Token" "$CF_Token")"
     [[ -n "$CF_Token" ]] || err "Cloudflare API Token 不能为空"
@@ -917,55 +947,42 @@ cmd_show_nodes() {
   local vless_uuid vless_port vless_sni vless_tag vless_flow vless_link
   local node_name
   local has_any="false"
-  local pass
   node_name="$(normalize_name "${NODE_NAME:-${TLS_DOMAIN:-node}}")"
-  for pass in 1 2; do
-    has_any="false"
-    cfg="$(docker exec singbox-warp sh -c 'cat /etc/sing-box/config.json' 2>/dev/null || true)"
-    if [[ -z "$cfg" ]]; then
-      err "无法读取容器内的 /etc/sing-box/config.json"
-      exit 1
-    fi
+  cfg="$(docker exec singbox-warp sh -c 'cat /etc/sing-box/config.json' 2>/dev/null || true)"
+  if [[ -z "$cfg" ]]; then
+    err "无法读取容器内的 /etc/sing-box/config.json"
+    return 1
+  fi
 
-    hy2_password="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .users[0].password // empty' | head -n1)"
-    hy2_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .listen_port // empty' | head -n1)"
-    hy2_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .tls.server_name // empty' | head -n1)"
-    hy2_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .tag // empty' | head -n1)"
-    hy2_insecure="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | if .tls.insecure then 1 else 0 end' | head -n1)"
-    if [[ -n "$hy2_password" && -n "$hy2_port" && -n "$hy2_sni" ]]; then
-      hy2_tag="${hy2_tag:-hy2-${node_name}}"
-      echo "[node] hy2://${hy2_password}@${hy2_sni}:${hy2_port}?sni=${hy2_sni}&insecure=${hy2_insecure:-0}#${hy2_tag}"
-      has_any="true"
-    fi
+  hy2_password="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .users[0].password // empty' | head -n1)"
+  hy2_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .listen_port // empty' | head -n1)"
+  hy2_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .tls.server_name // empty' | head -n1)"
+  hy2_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .tag // empty' | head -n1)"
+  hy2_insecure="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | if .tls.insecure then 1 else 0 end' | head -n1)"
+  if [[ -n "$hy2_password" && -n "$hy2_port" && -n "$hy2_sni" ]]; then
+    hy2_tag="${hy2_tag:-hy2-${node_name}}"
+    echo "[node] hy2://${hy2_password}@${hy2_sni}:${hy2_port}?sni=${hy2_sni}&insecure=${hy2_insecure:-0}#${hy2_tag}"
+    has_any="true"
+  fi
 
-    vless_uuid="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .users[0].uuid // empty' | head -n1)"
-    vless_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .listen_port // empty' | head -n1)"
-    vless_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tls.server_name // empty' | head -n1)"
-    vless_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tag // empty' | head -n1)"
-    vless_flow="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .users[0].flow // empty' | head -n1)"
-    if [[ -n "$vless_uuid" && -n "$vless_port" && -n "$vless_sni" ]]; then
-      vless_tag="${vless_tag:-vless-${node_name}}"
-      vless_link="vless://${vless_uuid}@${vless_sni}:${vless_port}?encryption=none&security=tls&sni=${vless_sni}&type=tcp"
-      if [[ -n "$vless_flow" ]]; then
-        vless_link="${vless_link}&flow=${vless_flow}"
-      fi
-      echo "[node] ${vless_link}#${vless_tag}"
-      has_any="true"
+  vless_uuid="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .users[0].uuid // empty' | head -n1)"
+  vless_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .listen_port // empty' | head -n1)"
+  vless_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tls.server_name // empty' | head -n1)"
+  vless_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tag // empty' | head -n1)"
+  vless_flow="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .users[0].flow // empty' | head -n1)"
+  if [[ -n "$vless_uuid" && -n "$vless_port" && -n "$vless_sni" ]]; then
+    vless_tag="${vless_tag:-vless-${node_name}}"
+    vless_link="vless://${vless_uuid}@${vless_sni}:${vless_port}?encryption=none&security=tls&sni=${vless_sni}&type=tcp"
+    if [[ -n "$vless_flow" ]]; then
+      vless_link="${vless_link}&flow=${vless_flow}"
     fi
+    echo "[node] ${vless_link}#${vless_tag}"
+    has_any="true"
+  fi
 
-    if [[ "$has_any" == "true" ]]; then
-      return 0
-    fi
-
-    if [[ "$pass" -eq 1 && -f "$ENV_FILE" ]]; then
-      log "未解析到节点链接，自动执行一次部署刷新..."
-      cmd_deploy || true
-    fi
-  done
-
-  docker logs --tail 200 singbox-warp 2>/dev/null | grep -E '^\[node\] (hy2://|vless://)' || true
-  err "无法从运行配置解析节点链接 (请先执行部署/更新并检查 TLS_DOMAIN)"
-  exit 1
+  [[ "$has_any" == "true" ]] && return 0
+  err "无法从运行配置解析节点链接；该操作不会自动修改或重启服务"
+  return 1
 }
 
 apply_rollback_image() {
@@ -1014,6 +1031,7 @@ cmd_bootstrap() {
     err "首次安装未通过健康检查，请根据上方日志修正配置后重试"
     return 1
   }
+  persist_active_app_dir
   log "初始化部署完成: $APP_DIR"
 }
 
@@ -1077,6 +1095,95 @@ cmd_edit_config() {
   log "配置修改完成"
 }
 
+DIAG_FAILURES=0
+
+diag_ok() { printf '[OK]   %s\n' "$*"; }
+diag_warn() { printf '[WARN] %s\n' "$*"; }
+diag_fail() {
+  printf '[FAIL] %s\n' "$*"
+  DIAG_FAILURES=$((DIAG_FAILURES + 1))
+}
+
+cmd_diagnose() {
+  DIAG_FAILURES=0
+  printf '\n诊断检查（只读）\n'
+  printf '部署目录: %s\n\n' "$APP_DIR"
+
+  if [[ -f "$ENV_FILE" ]]; then diag_ok ".env 存在"; else diag_fail "缺少 $ENV_FILE"; fi
+  if [[ -f "$COMPOSE_FILE" ]]; then diag_ok "Compose 文件存在"; else diag_fail "缺少 $COMPOSE_FILE"; fi
+  command -v docker >/dev/null 2>&1 || {
+    diag_fail "Docker 未安装"
+    return 1
+  }
+
+  if [[ -f "$ENV_FILE" ]]; then
+    load_existing_env
+  fi
+  if [[ -f "$COMPOSE_FILE" ]] && (cd "$APP_DIR" && docker compose config -q >/dev/null 2>&1); then
+    diag_ok "Compose 配置有效"
+  else
+    diag_fail "Compose 配置无效"
+  fi
+
+  if docker inspect singbox-warp >/dev/null 2>&1; then
+    local running health
+    running="$(docker inspect singbox-warp --format '{{.State.Running}}')"
+    health="$(docker inspect singbox-warp --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}')"
+    if [[ "$running" == "true" ]]; then diag_ok "容器正在运行"; else diag_fail "容器未运行"; fi
+    if [[ "$health" == "healthy" ]]; then diag_ok "容器健康检查通过"; else diag_fail "容器健康状态: $health"; fi
+  else
+    diag_fail "未找到 singbox-warp 容器"
+  fi
+
+  if [[ -n "$TLS_DOMAIN" ]]; then
+    if command -v getent >/dev/null 2>&1 && getent ahostsv4 "$TLS_DOMAIN" >/dev/null 2>&1; then
+      diag_ok "域名可解析: $TLS_DOMAIN"
+    else
+      diag_warn "无法确认域名解析: $TLS_DOMAIN"
+    fi
+  else
+    diag_fail "TLS_DOMAIN 为空"
+  fi
+
+  if [[ -n "$CF_Token" ]] && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    if curl -fsSL --max-time 10 -H "Authorization: Bearer $CF_Token" \
+      https://api.cloudflare.com/client/v4/user/tokens/verify 2>/dev/null \
+      | jq -e '.success == true and .result.status == "active"' >/dev/null 2>&1; then
+      diag_ok "Cloudflare API Token 有效"
+    else
+      diag_fail "Cloudflare API Token 无效或网络不可达"
+    fi
+  else
+    diag_warn "未检查 Cloudflare Token（Token、curl 或 jq 缺失）"
+  fi
+
+  if docker exec singbox-warp test -s "$TLS_CERT_PATH" >/dev/null 2>&1; then
+    local cert_end
+    cert_end="$(docker exec singbox-warp openssl x509 -in "$TLS_CERT_PATH" -noout -enddate 2>/dev/null || true)"
+    if docker exec singbox-warp openssl x509 -in "$TLS_CERT_PATH" -checkend 2592000 -noout >/dev/null 2>&1; then
+      diag_ok "TLS 证书有效期超过 30 天 (${cert_end#notAfter=})"
+    else
+      diag_warn "TLS 证书将在 30 天内到期 (${cert_end#notAfter=})"
+    fi
+  else
+    diag_fail "容器内未找到 TLS 证书"
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    local warp_ip
+    warp_ip="$(curl -fsSL --max-time 10 --proxy "socks5h://127.0.0.1:$MIXED_PORT" https://api.ipify.org 2>/dev/null || true)"
+    if [[ -n "$warp_ip" ]]; then diag_ok "Mixed/WARP 出口可用: $warp_ip"; else diag_warn "无法通过 Mixed 代理获取出口 IP"; fi
+  fi
+
+  printf '\n'
+  if [[ "$DIAG_FAILURES" -eq 0 ]]; then
+    diag_ok "未发现阻断性问题"
+    return 0
+  fi
+  printf '[FAIL] 发现 %s 个阻断性问题\n' "$DIAG_FAILURES"
+  return 1
+}
+
 cmd_logs() {
   need_cmd docker
   docker logs --tail 100 -f singbox-warp || true
@@ -1090,6 +1197,7 @@ cmd_restart() {
 }
 
 main() {
+  load_active_app_dir
   self_install_swd
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
     usage
@@ -1108,10 +1216,11 @@ main() {
       3) cmd_edit_config || true ;;
       4) cmd_show_nodes || true ;;
       5) cmd_status || true ;;
-      6) cmd_logs ;;
-      7) cmd_restart || true ;;
-      8) cmd_rollback || true ;;
-      9) log "退出"; return 0 ;;
+      6) cmd_diagnose || true ;;
+      7) cmd_logs ;;
+      8) cmd_restart || true ;;
+      9) cmd_rollback || true ;;
+      10) log "退出"; return 0 ;;
     esac
   done
 }

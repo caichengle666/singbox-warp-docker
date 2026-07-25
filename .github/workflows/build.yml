@@ -22,6 +22,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Validate shell scripts
+        run: |
+          set -euo pipefail
+          bash -n deploy.sh entrypoint.sh
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y shellcheck
+          fi
+          shellcheck -S warning -e SC2034 deploy.sh entrypoint.sh
+
+      - name: Validate Compose configuration
+        run: docker compose --env-file .env.example config -q
+
       - name: Detect code changes
         id: changes
         if: github.event_name == 'push'

@@ -361,34 +361,14 @@ mv "$tmp_config" "$SB_CONFIG"
 
 jq empty "$SB_CONFIG" >/dev/null
 
-HY2_PASSWORD="$(jq -r '.inbounds[] | select(.type=="hysteria2") | .users[0].password // empty' "$SB_CONFIG" | head -n1)"
-HY2_PORT="$(jq -r '.inbounds[] | select(.type=="hysteria2") | .listen_port // empty' "$SB_CONFIG" | head -n1)"
-HY2_SNI="$(jq -r '.inbounds[] | select(.type=="hysteria2") | .tls.server_name // empty' "$SB_CONFIG" | head -n1)"
-HY2_INSECURE="$(jq -r '.inbounds[] | select(.type=="hysteria2") | if .tls.insecure then 1 else 0 end' "$SB_CONFIG" | head -n1)"
 HY2_TAG="$(jq -r '.inbounds[] | select(.type=="hysteria2") | .tag // "hy2"' "$SB_CONFIG" | head -n1)"
-
-if [ -n "$HY2_PASSWORD" ] && [ -n "$HY2_PORT" ] && [ -n "$HY2_SNI" ]; then
-  HY2_LINK="hy2://${HY2_PASSWORD}@${HY2_SNI}:${HY2_PORT}?sni=${HY2_SNI}&insecure=${HY2_INSECURE}#${HY2_TAG}"
-  echo "[node] $HY2_LINK"
-else
-  echo "[node] skipped: unable to build hy2 link from config"
-fi
-
-VLESS_UUID="$(jq -r '.inbounds[] | select(.type=="vless") | .users[0].uuid // empty' "$SB_CONFIG" | head -n1)"
-VLESS_PORT="$(jq -r '.inbounds[] | select(.type=="vless") | .listen_port // empty' "$SB_CONFIG" | head -n1)"
-VLESS_SNI="$(jq -r '.inbounds[] | select(.type=="vless") | .tls.server_name // empty' "$SB_CONFIG" | head -n1)"
 VLESS_TAG="$(jq -r '.inbounds[] | select(.type=="vless") | .tag // "vless"' "$SB_CONFIG" | head -n1)"
 
-if [ -n "$VLESS_UUID" ] && [ -n "$VLESS_PORT" ] && [ -n "$VLESS_SNI" ]; then
-  VLESS_FLOW="$(jq -r '.inbounds[] | select(.type=="vless") | .users[0].flow // empty' "$SB_CONFIG" | head -n1)"
-  VLESS_LINK="vless://${VLESS_UUID}@${VLESS_SNI}:${VLESS_PORT}?encryption=none&security=tls&sni=${VLESS_SNI}&type=tcp"
-  if [ -n "$VLESS_FLOW" ]; then
-    VLESS_LINK="${VLESS_LINK}&flow=${VLESS_FLOW}"
-  fi
-  VLESS_LINK="${VLESS_LINK}#${VLESS_TAG}"
-  echo "[node] $VLESS_LINK"
-else
-  echo "[node] skipped: unable to build vless link from config"
+if [[ -n "$HY2_TAG" ]]; then
+  echo "[node] hysteria2 ready: $HY2_TAG"
+fi
+if [[ -n "$VLESS_TAG" ]]; then
+  echo "[node] vless ready: $VLESS_TAG"
 fi
 
 start_singbox
