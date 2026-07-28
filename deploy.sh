@@ -422,7 +422,14 @@ detect_city_code() {
     singapore)          code="sin" ;;
     london)             code="lon" ;;
     frankfurt)          code="fra" ;;
-    *)                  code="${city:0:3}" ;;
+    *)
+      city="$(normalize_name "$city")"
+      if [[ "$city" == "node" ]]; then
+        code="x"
+      else
+        code="${city:0:3}"
+      fi
+      ;;
   esac
   printf '%s' "$code"
 }
@@ -474,7 +481,7 @@ prepare_auto_domain() {
   need_cmd curl
   need_cmd jq
 
-  local ip cpu mem country zone_id
+  local ip cpu mem city ip_suffix zone_id
   ip="$(get_public_ip)"
   [[ -n "$ip" ]] || { err "无法检测到公网 IPv4"; exit 1; }
   cpu="$(detect_cpu_flavor)"
@@ -584,23 +591,30 @@ collect_bootstrap_inputs() {
     fi
   fi
 
-  printf "\n自动 TLS 配置\n" >&2
-  printf "需要 Cloudflare API Token（Zone / DNS / Edit 权限）。\n" >&2
-  printf "申请地址: https://dash.cloudflare.com/profile/api-tokens\n" >&2
-  AUTO_TLS="true"
-  CF_Token="$(ask_secret "Cloudflare API Token" "$CF_Token")"
-  while [[ -z "$CF_Token" ]]; do
+  printf "\nTLS 配置\n" >&2
+  AUTO_TLS="$(normalize_bool "$(ask_choice "启用自动 TLS (y/n)" "$AUTO_TLS")")"
+  if [[ "$AUTO_TLS" == "true" ]]; then
+    printf "需要 Cloudflare API Token（Zone / DNS / Edit 权限）。\n" >&2
+    printf "申请地址: https://dash.cloudflare.com/profile/api-tokens\n" >&2
     CF_Token="$(ask_secret "Cloudflare API Token" "$CF_Token")"
-    [[ -n "$CF_Token" ]] || err "Cloudflare API Token 不能为空"
-  done
-  AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
-  if [[ "$AUTO_DOMAIN" == "true" ]]; then
-    BASE_DOMAIN="$(ask_input "Cloudflare 主域名 (example.com)" "$BASE_DOMAIN")"
-    TLS_DOMAIN=""
+    while [[ -z "$CF_Token" ]]; do
+      CF_Token="$(ask_secret "Cloudflare API Token" "$CF_Token")"
+      [[ -n "$CF_Token" ]] || err "Cloudflare API Token 不能为空"
+    done
+    AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
+    if [[ "$AUTO_DOMAIN" == "true" ]]; then
+      BASE_DOMAIN="$(ask_input "Cloudflare 主域名 (example.com)" "$BASE_DOMAIN")"
+      TLS_DOMAIN=""
+    else
+      TLS_DOMAIN="$(ask_input "TLS 域名" "$TLS_DOMAIN")"
+    fi
+    ACME_EMAIL="$(ask_input "证书通知邮箱 (建议填写)" "$ACME_EMAIL")"
   else
+    AUTO_DOMAIN="false"
+    CF_Token=""
     TLS_DOMAIN="$(ask_input "TLS 域名" "$TLS_DOMAIN")"
+    printf "请将 fullchain.pem 和 privkey.pem 放入 %s/certs/\n" "$APP_DIR" >&2
   fi
-  ACME_EMAIL="$(ask_input "证书通知邮箱 (建议填写)" "$ACME_EMAIL")"
 
   printf "\n协议 / 端口配置\n" >&2
   ENABLE_HY2="$(normalize_bool "$(ask_choice "启用 HY2 (y/n 或 true/false)" "${ENABLE_HY2}")")"
@@ -630,7 +644,11 @@ confirm_config() {
   printf "\n配置摘要\n" >&2
   printf "  部署目录: %s\n" "$APP_DIR" >&2
   printf "  TLS 域名: %s\n" "$domain_label" >&2
-  printf "  Cloudflare Token: 已配置（不会显示）\n" >&2
+  if [[ "$AUTO_TLS" == "true" ]]; then
+    printf "  Cloudflare Token: 已配置（不会显示）\n" >&2
+  else
+    printf "  TLS 模式: 手动证书\n" >&2
+  fi
   printf "  HY2: %s (端口 %s)\n" "$ENABLE_HY2" "$HY2_PORT" >&2
   printf "  VLESS: %s (端口 %s)\n" "$ENABLE_VLESS" "$VLESS_PORT" >&2
   printf "  Mixed 端口: %s (仅本机)\n" "$MIXED_PORT" >&2
@@ -764,11 +782,11 @@ ${ports_block}
     mem_limit: 512m
     pids_limit: 256
     healthcheck:
-      test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"\$(cat /run/sing-box.pid)\""]
+      test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"\$(cat /run/sing-box.pid)\" && curl -fsS --max-time 3 --proxy \"socks5h://127.0.0.1:\${MIXED_PORT:-1080}\" https://cp.cloudflare.com/ >/dev/null"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 90s
     logging:
       driver: json-file
       options:
@@ -877,11 +895,11 @@ restore_config() {
 }
 
 wait_healthy() {
-  local i
-  for i in $(seq 1 30); do
-    local s
+  local attempts="${1:-30}"
+  local i s
+  for i in $(seq 1 "$attempts"); do
     s="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' singbox-warp 2>/dev/null || true)"
-    log "health check $i/30: $s"
+    log "health check $i/$attempts: $s"
     if [[ "$s" == "healthy" ]]; then
       return 0
     fi
@@ -891,36 +909,6 @@ wait_healthy() {
   docker ps --format '{{.Names}} {{.Status}} {{.Image}}' | grep '^singbox-warp ' || true
   docker logs --tail 80 singbox-warp || true
   return 1
-}
-
-cmd_init() {
-  need_cmd docker
-  mkdir -p "$APP_DIR"/{data,certs,acme}
-  write_compose
-  write_env
-  log "初始化完成: $APP_DIR"
-  log "下一步: 编辑 $ENV_FILE，然后运行: $0 deploy"
-}
-
-cmd_deploy() {
-  need_cmd docker
-  [[ -f "$COMPOSE_FILE" ]] || { err "缺少 compose 文件: $COMPOSE_FILE"; exit 1; }
-  [[ -f "$ENV_FILE" ]] || { err "缺少环境变量文件: $ENV_FILE"; exit 1; }
-
-  load_existing_env
-  validate_config
-  prepare_auto_domain
-  finalize_node_name
-  write_env
-  record_current_image_for_rollback
-
-  (
-    cd "$APP_DIR"
-    docker compose pull
-    docker compose up -d
-  )
-  wait_healthy || return 1
-  log "部署完成"
 }
 
 cmd_status() {
@@ -985,10 +973,24 @@ cmd_show_nodes() {
   return 1
 }
 
+replace_compose_image() {
+  local image="$1"
+  validate_env_value "IMAGE" "$image"
+  awk -v replacement="$image" '
+    /^[[:space:]]*image:[[:space:]]*/ {
+      match($0, /^[[:space:]]*image:[[:space:]]*/)
+      print substr($0, 1, RLENGTH) replacement
+      next
+    }
+    { print }
+  ' "$COMPOSE_FILE" >"$COMPOSE_FILE.tmp"
+  mv "$COMPOSE_FILE.tmp" "$COMPOSE_FILE"
+}
+
 apply_rollback_image() {
   local rollback_image="$1"
   [[ -f "$COMPOSE_FILE" ]] || { err "缺少 compose 文件: $COMPOSE_FILE"; exit 1; }
-  sed -i -E "s#^([[:space:]]*image:[[:space:]]*).+#\1${rollback_image}#" "$COMPOSE_FILE"
+  replace_compose_image "$rollback_image"
   if ! docker image inspect "$rollback_image" >/dev/null 2>&1; then
     docker pull "$rollback_image"
   fi
@@ -1027,7 +1029,7 @@ cmd_bootstrap() {
     docker compose pull
     docker compose up -d
   )
-  wait_healthy || {
+  wait_healthy 180 || {
     err "首次安装未通过健康检查，请根据上方日志修正配置后重试"
     return 1
   }
@@ -1042,7 +1044,7 @@ cmd_update_image() {
     return 1
   }
   if [[ -s "$UPDATE_IMAGE_FILE" ]] && grep -Eq '^[[:space:]]*image:[[:space:]]*([^[:space:]]+@sha256:|sha256:)' "$COMPOSE_FILE"; then
-    sed -i -E "s#^([[:space:]]*image:[[:space:]]*).+#\1$(cat "$UPDATE_IMAGE_FILE")#" "$COMPOSE_FILE"
+    replace_compose_image "$(head -n1 "$UPDATE_IMAGE_FILE")"
   fi
   record_current_image_for_rollback
   if ! (

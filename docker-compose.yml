@@ -36,12 +36,12 @@ services:
     mem_limit: 512m
     pids_limit: 256
     healthcheck:
-      # 通过 PID 文件检查 sing-box 主进程是否存活
-      test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"$(cat /run/sing-box.pid)\""]
+      # 检查 sing-box 进程存活，并经 Mixed/WARP 出口发起真实 HTTPS 请求
+      test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"$(cat /run/sing-box.pid)\" && curl -fsS --max-time 3 --proxy \"socks5h://127.0.0.1:${MIXED_PORT:-1080}\" https://cp.cloudflare.com/ >/dev/null"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 90s
     environment:
       # 端口
       - HY2_PORT=${HY2_PORT:-32443}

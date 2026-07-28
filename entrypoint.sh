@@ -24,6 +24,7 @@ VLESS_UUID_ENV="${VLESS_UUID:-}"
 NODE_NAME_ENV="${NODE_NAME:-}"
 SINGBOX_PID=""
 STOP_REQUESTED="false"
+PROCESS_CHECK_INTERVAL_SECONDS=10
 
 validate_positive_integer() {
   local name="$1"
@@ -375,6 +376,7 @@ start_singbox
 
 trap handle_signal TERM INT HUP
 
+elapsed_seconds=0
 while true; do
   if [ "$STOP_REQUESTED" = "true" ]; then
     exit 0
@@ -386,6 +388,10 @@ while true; do
     exit 1
   fi
 
-  sleep "$TLS_RENEW_INTERVAL_ENV"
-  renew_tls_cert_if_needed
+  sleep "$PROCESS_CHECK_INTERVAL_SECONDS"
+  elapsed_seconds=$((elapsed_seconds + PROCESS_CHECK_INTERVAL_SECONDS))
+  if [ "$elapsed_seconds" -ge "$TLS_RENEW_INTERVAL_ENV" ]; then
+    elapsed_seconds=0
+    renew_tls_cert_if_needed
+  fi
 done
