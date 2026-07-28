@@ -131,9 +131,9 @@ HY2_PASSWORD=
 # 可留空：如果填写，则覆盖 VLESS UUID；不填则跟 AUTH_UUID 一致
 VLESS_UUID=
 
-# 不建议改：镜像构建参数，除非你明确要固定旧版本
-SINGBOX_VERSION=1.11.8
-WGCF_VERSION=2.2.26
+# 可选：留空则构建时自动获取最新版本；填写则固定指定版本
+SINGBOX_VERSION=
+WGCF_VERSION=
 
 # 必须确认：手动证书模式这里应为 false
 AUTO_TLS=false
@@ -185,9 +185,9 @@ AUTH_UUID=53fbb4a6-b0a1-4b0b-ae60-0b844c76580e
 HY2_PASSWORD=
 VLESS_UUID=
 
-# 不建议改：镜像构建参数，除非你明确要固定旧版本
-SINGBOX_VERSION=1.11.8
-WGCF_VERSION=2.2.26
+# 可选：留空则构建时自动获取最新版本；填写则固定指定版本
+SINGBOX_VERSION=
+WGCF_VERSION=
 
 # 必须改：自动 TLS 模式这里应为 true
 AUTO_TLS=true

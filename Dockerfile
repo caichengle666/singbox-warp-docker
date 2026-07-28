@@ -1,7 +1,7 @@
 FROM debian:trixie-slim
 
-ARG SINGBOX_VERSION=1.11.8
-ARG WGCF_VERSION=2.2.26
+ARG SINGBOX_VERSION=""
+ARG WGCF_VERSION=""
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl tar bash jq tzdata openssl socat \
@@ -14,6 +14,13 @@ RUN set -eux; \
       aarch64) sb_arch='arm64'; wgcf_arch='arm64' ;; \
       *) echo "Unsupported arch: $arch"; exit 1 ;; \
     esac; \
+    if [ -z "$SINGBOX_VERSION" ]; then \
+      SINGBOX_VERSION="$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name | sed 's/^v//')"; \
+    fi; \
+    if [ -z "$WGCF_VERSION" ]; then \
+      WGCF_VERSION="$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -r .tag_name | sed 's/^v//')"; \
+    fi; \
+    echo "Building with sing-box v${SINGBOX_VERSION}, wgcf v${WGCF_VERSION}"; \
     curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${sb_arch}.tar.gz" -o /tmp/sb.tgz; \
     tar -xzf /tmp/sb.tgz -C /tmp; \
     cp "/tmp/sing-box-${SINGBOX_VERSION}-linux-${sb_arch}/sing-box" /usr/local/bin/sing-box; \

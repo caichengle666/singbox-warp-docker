@@ -10,8 +10,8 @@ services:
     #   context: .
     #   dockerfile: Dockerfile
     #   args:
-    #     SINGBOX_VERSION: ${SINGBOX_VERSION:-1.11.8}
-    #     WGCF_VERSION: ${WGCF_VERSION:-2.2.26}
+    #     SINGBOX_VERSION: ""  # 留空自动获取最新版本
+    #     WGCF_VERSION: ""    # 留空自动获取最新版本
     container_name: singbox-warp
     restart: unless-stopped
     ports:

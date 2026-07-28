@@ -115,9 +115,9 @@ HY2_PASSWORD=
 # Optional: overrides only VLESS UUID; if empty, falls back to AUTH_UUID
 VLESS_UUID=
 
-# Usually do not change unless you intentionally want to pin old versions
-SINGBOX_VERSION=1.11.8
-WGCF_VERSION=2.2.26
+# Optional: leave empty to auto-fetch latest at build time; set to pin a specific version
+SINGBOX_VERSION=
+WGCF_VERSION=
 
 # Must confirm: manual certificate mode should use false
 AUTO_TLS=false
@@ -169,9 +169,9 @@ AUTH_UUID=53fbb4a6-b0a1-4b0b-ae60-0b844c76580e
 HY2_PASSWORD=
 VLESS_UUID=
 
-# Usually do not change unless you intentionally want to pin old versions
-SINGBOX_VERSION=1.11.8
-WGCF_VERSION=2.2.26
+# Optional: leave empty to auto-fetch latest at build time; set to pin a specific version
+SINGBOX_VERSION=
+WGCF_VERSION=
 
 # Must change: automatic TLS mode should use true
 AUTO_TLS=true
