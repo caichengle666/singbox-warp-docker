@@ -1,25 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.0"
-SCRIPT_UPDATE_URL="${SCRIPT_UPDATE_URL:-https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh}"
-
-# ── 颜色系统 ──────────────────────────────────────────────
-if [[ -t 2 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
-  C_RED=$'\033[0;31m'
-  C_GREEN=$'\033[0;32m'
-  C_YELLOW=$'\033[0;33m'
-  C_CYAN=$'\033[0;36m'
-  C_BOLD=$'\033[1m'
-  C_DIM=$'\033[2m'
-  C_RESET=$'\033[0m'
-else
-  C_RED="" C_GREEN="" C_YELLOW="" C_CYAN="" C_BOLD="" C_DIM="" C_RESET=""
-fi
-
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
+DEPLOY_SCRIPT_URL="${DEPLOY_SCRIPT_URL:-https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh}"
 COMPOSE_FILE_NAME="docker-compose.yml"
 ENV_FILE_NAME=".env"
 STATE_DIR_NAME=".deploy-state"
@@ -56,6 +41,7 @@ STATE_DIR="$APP_DIR/$STATE_DIR_NAME"
 ROLLBACK_FILE="$STATE_DIR/last_image.txt"
 CONFIG_BACKUP_DIR="$STATE_DIR/config-backup"
 UPDATE_IMAGE_FILE="$STATE_DIR/update_image.txt"
+BACKUP_DIR="$APP_DIR/backups"
 
 refresh_paths() {
   COMPOSE_FILE="$APP_DIR/$COMPOSE_FILE_NAME"
@@ -64,12 +50,11 @@ refresh_paths() {
   ROLLBACK_FILE="$STATE_DIR/last_image.txt"
   CONFIG_BACKUP_DIR="$STATE_DIR/config-backup"
   UPDATE_IMAGE_FILE="$STATE_DIR/update_image.txt"
+  BACKUP_DIR="$APP_DIR/backups"
 }
 
-log()  { printf '%s[deploy]%s %s\n' "$C_CYAN" "$C_RESET" "$*"; }
-ok()   { printf '%s[  OK ]%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
-warn() { printf '%s[ WARN]%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
-err()  { printf '%s[ERROR]%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
+log() { printf '[deploy] %s\n' "$*"; }
+err() { printf '[deploy][error] %s\n' "$*" >&2; }
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -90,17 +75,6 @@ self_install_swd() {
   chmod +x "$target" 2>/dev/null || true
 }
 
-print_banner() {
-  printf '\n'
-  printf '%s' "$C_BOLD"
-  printf '  ╔══════════════════════════════════════════╗\n'
-  printf '  ║   singbox-warp-docker  部署管理工具      ║\n'
-  printf '  ║   v%s                               ║\n' "$SCRIPT_VERSION"
-  printf '  ╚══════════════════════════════════════════╝\n'
-  printf '%s' "$C_RESET"
-  printf '\n'
-}
-
 usage() {
   cat <<'EOF'
 Usage:
@@ -109,7 +83,6 @@ Usage:
 Environment:
   APP_DIR         部署目录 (default: /opt/singbox-warp)
   IMAGE           Runtime image (default: ghcr.io/caichengle666/singbox-warp-docker:latest)
-  SCRIPT_UPDATE_URL  脚本自更新地址 (default: GitHub main deploy.sh)
 
   AUTO_TLS        true/false (required)
   AUTO_DOMAIN     true/false (default: true, with AUTO_TLS=true)
@@ -146,48 +119,6 @@ run_root() {
   fi
 }
 
-docker_cmd() {
-  if is_root; then
-    printf 'docker'
-    return 0
-  fi
-  if docker info >/dev/null 2>&1; then
-    printf 'docker'
-    return 0
-  fi
-  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-    printf 'sudo -i docker'
-    return 0
-  fi
-  err "当前用户无法访问 Docker，请使用免密 sudo 或将用户加入 docker 组"
-  return 1
-}
-
-dc() {
-  local cmd
-  cmd="$(docker_cmd)" || return 1
-  $cmd "$@"
-}
-
-dcc() {
-  if is_root; then
-    (cd "$APP_DIR" && docker "$@")
-    return
-  fi
-  if docker info >/dev/null 2>&1; then
-    (cd "$APP_DIR" && docker "$@")
-    return
-  fi
-  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-    local app_dir_q
-    printf -v app_dir_q '%q' "$APP_DIR"
-    sudo -i bash -lc "cd $app_dir_q && docker $*"
-    return
-  fi
-  err "当前用户无法访问 Docker，请使用免密 sudo 或将用户加入 docker 组"
-  return 1
-}
-
 load_active_app_dir() {
   [[ -z "$APP_DIR_EXPLICIT" && -r "$ACTIVE_INSTANCE_FILE" ]] || return 0
   local saved_dir
@@ -214,15 +145,6 @@ persist_active_app_dir() {
   fi
 }
 
-is_deployed() {
-  [[ -f "$ENV_FILE" && -f "$COMPOSE_FILE" ]]
-}
-
-container_running() {
-  command -v docker >/dev/null 2>&1 || return 1
-  dc inspect singbox-warp --format '{{.State.Running}}' 2>/dev/null | grep -q '^true$'
-}
-
 validate_bool() {
   case "$1" in
     true|false) ;;
@@ -233,56 +155,35 @@ validate_bool() {
   esac
 }
 
-read_line() {
-  local __result_var="$1"
-  local __value=""
-  if [[ "${FORCE_STDIN:-0}" == "1" ]]; then
-    if ! read -r __value; then
-      err "未能从 stdin 读取交互输入"
-      exit 1
-    fi
-  elif [[ -r /dev/tty ]]; then
-    if ! read -r __value < /dev/tty; then
-      err "未能从终端读取交互输入"
-      exit 1
-    fi
-  else
-    if ! read -r __value; then
-      err "未检测到交互终端；请使用: curl ... -o deploy.sh && bash deploy.sh"
-      exit 1
-    fi
-  fi
-  printf -v "$__result_var" '%s' "$__value"
-}
-
 ask_input() {
   local prompt="$1"
   local default="${2:-}"
   local value=""
   if [[ -n "$default" ]]; then
-    printf "%s%s%s [%s]: " "$C_CYAN" "$prompt" "$C_RESET" "$default" >&2
+    printf "%s [%s]: " "$prompt" "$default" >&2
   else
-    printf "%s%s%s: " "$C_CYAN" "$prompt" "$C_RESET" >&2
+    printf "%s: " "$prompt" >&2
   fi
-  read_line value
+  if [[ "${FORCE_STDIN:-0}" == "1" ]]; then
+    if ! read -r value; then
+      err "未能从 stdin 读取交互输入"
+      exit 1
+    fi
+  elif [[ -r /dev/tty ]]; then
+    if ! read -r value < /dev/tty; then
+      err "未能从终端读取交互输入"
+      exit 1
+    fi
+  else
+    if ! read -r value; then
+      err "未检测到交互终端；请使用: curl ... -o deploy.sh && bash deploy.sh"
+      exit 1
+    fi
+  fi
   if [[ -z "$value" ]]; then
     value="$default"
   fi
   printf '%s' "$value"
-}
-
-ask_port() {
-  local prompt="$1"
-  local default="$2"
-  local value=""
-  while true; do
-    value="$(ask_input "$prompt" "$default")"
-    if [[ "$value" =~ ^[1-9][0-9]*$ ]] && (( 10#$value <= 65535 )); then
-      printf '%s' "$value"
-      return 0
-    fi
-    err "端口必须是 1-65535 的正整数，当前值: $value"
-  done
 }
 
 ask_choice() {
@@ -290,8 +191,23 @@ ask_choice() {
   local default="$2"
   local value=""
   while true; do
-    printf "%s%s%s [%s]: " "$C_CYAN" "$prompt" "$C_RESET" "$default" >&2
-    read_line value
+    printf "%s [%s]: " "$prompt" "$default" >&2
+    if [[ "${FORCE_STDIN:-0}" == "1" ]]; then
+      if ! read -r value; then
+        err "未能从 stdin 读取交互输入"
+        exit 1
+      fi
+    elif [[ -r /dev/tty ]]; then
+      if ! read -r value < /dev/tty; then
+        err "未能从终端读取交互输入"
+        exit 1
+      fi
+    else
+      if ! read -r value; then
+        err "未检测到交互终端；请使用: curl ... -o deploy.sh && bash deploy.sh"
+        exit 1
+      fi
+    fi
     value="${value:-$default}"
     case "$value" in
       true|false|yes|no|y|n)
@@ -310,9 +226,9 @@ ask_secret() {
   local current="${2:-}"
   local value=""
   if [[ -n "$current" ]]; then
-    printf "%s%s%s [已配置，留空保持不变]: " "$C_CYAN" "$prompt" "$C_RESET" >&2
+    printf "%s [已配置，留空保持不变]: " "$prompt" >&2
   else
-    printf "%s%s%s: " "$C_CYAN" "$prompt" "$C_RESET" >&2
+    printf "%s: " "$prompt" >&2
   fi
   if [[ "${FORCE_STDIN:-0}" == "1" ]]; then
     read -r value || { err "未能从 stdin 读取交互输入"; exit 1; }
@@ -326,47 +242,47 @@ ask_secret() {
 }
 
 ask_menu_choice() {
-  local deployed="$1"
   local value=""
   while true; do
-    printf '\n' >&2
-    if [[ "$deployed" == "true" ]]; then
-      printf '%s  当前部署: %s%s\n' "$C_DIM" "$APP_DIR" "$C_RESET" >&2
-    else
-      printf '%s  尚未部署%s\n' "$C_DIM" "$C_RESET" >&2
-    fi
-    printf '\n' >&2
+    printf "\n请选择操作:\n" >&2
     printf "  1) 首次安装\n" >&2
-    if [[ "$deployed" == "true" ]]; then
-      printf "  2) 更新镜像\n" >&2
-      printf "  3) 修改配置\n" >&2
-      printf "  4) 查看节点\n" >&2
-      printf "  5) 查看状态\n" >&2
-      printf "  6) 诊断检查\n" >&2
-      printf "  7) 查看日志\n" >&2
-      printf "  8) 重启服务\n" >&2
-      printf "  9) 回滚镜像\n" >&2
-      printf " 10) %s卸载%s\n" "$C_RED" "$C_RESET" >&2
+    printf "  2) 更新镜像\n" >&2
+    printf "  3) 更新管理脚本\n" >&2
+    printf "  4) 修改配置\n" >&2
+    printf "  5) 查看节点 / 二维码\n" >&2
+    printf "  6) 状态总览\n" >&2
+    printf "  7) 诊断检查\n" >&2
+    printf "  8) 查看日志\n" >&2
+    printf "  9) 重启服务\n" >&2
+    printf " 10) 创建备份\n" >&2
+    printf " 11) 恢复备份\n" >&2
+    printf " 12) 自动更新设置\n" >&2
+    printf " 13) 回滚镜像\n" >&2
+    printf " 14) 卸载服务\n" >&2
+    printf " 15) 退出\n" >&2
+    printf "请输入 [1-15]: " >&2
+    if [[ "${FORCE_STDIN:-0}" == "1" ]]; then
+      if ! read -r value; then
+        err "未能从 stdin 读取交互输入"
+        exit 1
+      fi
+    elif [[ -r /dev/tty ]]; then
+      if ! read -r value < /dev/tty; then
+        err "未能从终端读取交互输入"
+        exit 1
+      fi
+    else
+      if ! read -r value; then
+        err "未检测到交互终端；请使用: curl ... -o deploy.sh && bash deploy.sh"
+        exit 1
+      fi
     fi
-    printf " 11) 更新脚本\n" >&2
-    printf "  0) 退出\n" >&2
-    printf '\n' >&2
-    printf "%s请输入%s: " "$C_BOLD" "$C_RESET" >&2
-    read_line value
     if [[ -z "$value" ]]; then
-      err "未输入内容"
-      continue
-    fi
-    if [[ "$value" == "0" ]]; then
-      printf '0'
-      return 0
-    fi
-    if [[ "$deployed" != "true" && "$value" != "1" && "$value" != "11" ]]; then
-      warn "尚未部署，请先选择 1) 首次安装"
+      err "未输入内容，请输入 1-15"
       continue
     fi
     case "$value" in
-      1|2|3|4|5|6|7|8|9|10|11)
+      1|2|3|4|5|6|7|8|9|10|11|12|13|14|15)
         printf '%s' "$value"
         return 0
         ;;
@@ -379,125 +295,250 @@ ask_menu_choice() {
 
 normalize_bool() {
   case "$1" in
-    true|yes|y) printf 'true' ;;
-    false|no|n) printf 'false' ;;
-    *) err "布尔值无效: $1"; exit 1 ;;
+    true|yes) printf 'true' ;;
+    y) printf 'true' ;;
+    false|no) printf 'false' ;;
+    n) printf 'false' ;;
+    *)
+      err "invalid boolean value: $1"
+      exit 1
+      ;;
   esac
 }
 
 normalize_name() {
   local text="$1"
-  text="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+  text="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
+  text="$(printf '%s' "$text" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
   printf '%s' "${text:-node}"
 }
 
-get_public_ip() {
-  local ip
-  ip="$(curl -fsSL --max-time 10 https://api.ipify.org 2>/dev/null || true)"
-  if [[ -z "$ip" ]]; then
-    ip="$(curl -fsSL --max-time 10 https://ipv4.icanhazip.com 2>/dev/null | tr -d '\r\n' || true)"
+resolve_node_name() {
+  local source_name="${NODE_NAME:-}"
+  if [[ -z "$source_name" ]]; then
+    # 自动生成：amd1g-{IP末段}-{城市简称}
+    local ip cpu mem city ip_suffix
+    ip="$(get_public_ip 2>/dev/null || echo "")"
+    if [[ -n "$ip" ]]; then
+      cpu="$(detect_cpu_flavor)"
+      mem="$(detect_mem_label)"
+      city="$(detect_city_code "$ip" 2>/dev/null || echo "x")"
+      ip_suffix="${ip##*.}"
+      source_name="${cpu}${mem}-${ip_suffix}-${city}"
+    else
+      source_name="${TLS_DOMAIN:-node}"
+    fi
   fi
-  printf '%s' "$ip"
+  normalize_name "$source_name"
+}
+
+gen_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '\r\n'
+    return 0
+  fi
+
+  if [[ -r /proc/sys/kernel/random/uuid ]]; then
+    tr '[:upper:]' '[:lower:]' </proc/sys/kernel/random/uuid | tr -d '\r\n'
+    return 0
+  fi
+
+  err "failed to generate UUID (uuidgen and /proc/sys/kernel/random/uuid unavailable)"
+  exit 1
+}
+
+resolve_auth_values() {
+  # Generate once and persist into .env by write_env(), so restarts won't rotate.
+  if [[ -z "$AUTH_UUID" ]]; then
+    AUTH_UUID="$(gen_uuid)"
+  fi
+  if [[ -z "$HY2_PASSWORD" ]]; then
+    HY2_PASSWORD="$AUTH_UUID"
+  fi
+  if [[ -z "$VLESS_UUID" ]]; then
+    VLESS_UUID="$AUTH_UUID"
+  fi
+}
+
+finalize_node_name() {
+  if [[ -z "$NODE_NAME" ]]; then
+    NODE_NAME="$(resolve_node_name)"
+  else
+    NODE_NAME="$(normalize_name "$NODE_NAME")"
+  fi
 }
 
 detect_cpu_flavor() {
   local info
   info="$(tr '[:upper:]' '[:lower:]' </proc/cpuinfo 2>/dev/null || true)"
-  if printf '%s' "$info" | grep -Eq 'amd|epyc|ryzen'; then printf 'amd'
-  elif printf '%s' "$info" | grep -Eq 'intel|xeon'; then printf 'intel'
-  elif printf '%s' "$info" | grep -Eq 'arm|aarch64|graviton'; then printf 'arm'
-  else printf 'cpu'; fi
+  if printf '%s' "$info" | grep -Eq 'amd|epyc|ryzen'; then
+    printf 'amd'
+  elif printf '%s' "$info" | grep -Eq 'intel|xeon'; then
+    printf 'intel'
+  elif printf '%s' "$info" | grep -Eq 'arm|aarch64|graviton'; then
+    printf 'arm'
+  else
+    printf 'cpu'
+  fi
 }
 
 detect_mem_label() {
   local kb gb
   kb="$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-  gb=$(( (kb + 1024 * 1024 - 1) / (1024 * 1024) ))
-  (( gb < 1 )) && gb=1
+  if [[ -z "$kb" || "$kb" -le 0 ]]; then
+    printf '1g'
+    return 0
+  fi
+  gb=$(( (kb + 1024*1024 - 1) / (1024*1024) ))
+  if [[ "$gb" -lt 1 ]]; then
+    gb=1
+  fi
   printf '%sg' "$gb"
 }
 
+get_public_ip() {
+  local ip
+  ip="$(curl -fsSL https://api.ipify.org 2>/dev/null || true)"
+  if [[ -z "$ip" ]]; then
+    ip="$(curl -fsSL https://ipv4.icanhazip.com 2>/dev/null | tr -d '\r\n' || true)"
+  fi
+  printf '%s' "$ip"
+}
+
 detect_city_code() {
-  local ip="$1" city code
-  city="$(curl -fsSL --max-time 10 "https://ipapi.co/${ip}/city/" 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d '\r\n' | sed 's/ //g' || true)"
+  local ip="$1"
+  local city=""
+  city="$(curl -fsSL "https://ipapi.co/${ip}/city/" 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d '\r\n' | sed 's/ //g' || true)"
+  if [[ -z "$city" ]]; then
+    city="$(curl -fsSL "https://ipwho.is/${ip}" 2>/dev/null | jq -r '.city // empty' | tr '[:upper:]' '[:lower:]' | sed 's/ //g' || true)"
+  fi
+  local code=""
   case "$city" in
-    phoenix) code="phx" ;; sanjose|sanjose*) code="sjc" ;; losangeles) code="lax" ;;
-    newyork) code="nyc" ;; chicago) code="chi" ;; dallas) code="dfw" ;;
-    seattle) code="sea" ;; miami) code="mia" ;; dubai) code="dxb" ;;
-    tokyo) code="tyo" ;; osaka) code="osa" ;; seoul) code="sel" ;;
-    singapore) code="sin" ;; london) code="lon" ;; frankfurt) code="fra" ;;
-    *) city="$(normalize_name "$city")"; [[ "$city" == "node" ]] && code="x" || code="${city:0:3}" ;;
+    phoenix)            code="phx" ;;
+    sanjose|san*jose)   code="sjc" ;;
+    losangeles)         code="lax" ;;
+    newyork)            code="nyc" ;;
+    chicago)            code="chi" ;;
+    dallas)             code="dfw" ;;
+    seattle)            code="sea" ;;
+    miami)              code="mia" ;;
+    dubai)              code="dxb" ;;
+    tokyo)              code="tyo" ;;
+    osaka)              code="osa" ;;
+    seoul)              code="sel" ;;
+    chuncheon)          code="chc" ;;
+    singapore)          code="sin" ;;
+    london)             code="lon" ;;
+    frankfurt)          code="fra" ;;
+    *)                  code="${city:0:3}" ;;
   esac
   printf '%s' "$code"
 }
 
-resolve_node_name() {
-  local ip cpu mem city suffix
-  if [[ -n "$NODE_NAME" ]]; then normalize_name "$NODE_NAME"; return; fi
-  ip="$(get_public_ip)"
-  if [[ -z "$ip" ]]; then normalize_name "${TLS_DOMAIN:-node}"; return; fi
-  cpu="$(detect_cpu_flavor)"; mem="$(detect_mem_label)"; city="$(detect_city_code "$ip")"; suffix="${ip##*.}"
-  normalize_name "${cpu}${mem}-${suffix}-${city}"
-}
 
-gen_uuid() {
-  if command -v uuidgen >/dev/null 2>&1; then uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '\r\n'
-  elif [[ -r /proc/sys/kernel/random/uuid ]]; then tr '[:upper:]' '[:lower:]' </proc/sys/kernel/random/uuid | tr -d '\r\n'
-  else err "无法生成 UUID"; exit 1; fi
-}
-
-resolve_auth_values() {
-  [[ -n "$AUTH_UUID" ]] || AUTH_UUID="$(gen_uuid)"
-  [[ -n "$HY2_PASSWORD" ]] || HY2_PASSWORD="$AUTH_UUID"
-  [[ -n "$VLESS_UUID" ]] || VLESS_UUID="$AUTH_UUID"
-}
 
 resolve_zone_id() {
-  curl -fsSL --max-time 15 -H "Authorization: Bearer $2" -H "Content-Type: application/json" \
-    "https://api.cloudflare.com/client/v4/zones?name=$1&status=active" | jq -r '.result[0].id // empty'
+  local zone_name="$1"
+  local token="$2"
+  local zid
+  zid="$(curl -fsSL -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    "https://api.cloudflare.com/client/v4/zones?name=$zone_name&status=active" \
+    | jq -r '.result[0].id // empty')"
+  printf '%s' "$zid"
 }
 
 upsert_cloudflare_a_record() {
-  local fqdn="$1" zone_id="$2" token="$3" ip="$4" record_id
-  record_id="$(curl -fsSL --max-time 15 -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
-    "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records?type=A&name=$fqdn" | jq -r '.result[0].id // empty')"
+  local fqdn="$1"
+  local zone_id="$2"
+  local token="$3"
+  local ip="$4"
+  local proxied="${5:-false}"
+  local record_id
+  record_id="$(curl -fsSL -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records?type=A&name=$fqdn" \
+    | jq -r '.result[0].id // empty')"
+
   if [[ -n "$record_id" ]]; then
-    curl -fsSL --max-time 15 -X PUT -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    curl -fsSL -X PUT -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
       "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records/$record_id" \
-      --data "{\"type\":\"A\",\"name\":\"$fqdn\",\"content\":\"$ip\",\"ttl\":120,\"proxied\":false}" | jq -e '.success == true' >/dev/null
-    ok "已更新 Cloudflare A 记录: $fqdn -> $ip"
+      --data "{\"type\":\"A\",\"name\":\"$fqdn\",\"content\":\"$ip\",\"ttl\":120,\"proxied\":$proxied}" \
+      | jq -e '.success == true' >/dev/null
+    log "已更新 Cloudflare A 记录: $fqdn -> $ip"
   else
-    curl -fsSL --max-time 15 -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    curl -fsSL -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
       "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records" \
-      --data "{\"type\":\"A\",\"name\":\"$fqdn\",\"content\":\"$ip\",\"ttl\":120,\"proxied\":false}" | jq -e '.success == true' >/dev/null
-    ok "已创建 Cloudflare A 记录: $fqdn -> $ip"
+      --data "{\"type\":\"A\",\"name\":\"$fqdn\",\"content\":\"$ip\",\"ttl\":120,\"proxied\":$proxied}" \
+      | jq -e '.success == true' >/dev/null
+    log "已创建 Cloudflare A 记录: $fqdn -> $ip"
   fi
 }
 
 prepare_auto_domain() {
-  [[ "$AUTO_TLS" == "true" && "$AUTO_DOMAIN" == "true" ]] || return 0
+  if [[ "$AUTO_TLS" != "true" || "$AUTO_DOMAIN" != "true" ]]; then
+    return 0
+  fi
   [[ -n "$BASE_DOMAIN" ]] || { err "AUTO_DOMAIN=true 时必须填写 BASE_DOMAIN"; exit 1; }
   [[ -n "$CF_Token" ]] || { err "AUTO_DOMAIN=true 时必须填写 CF_Token"; exit 1; }
-  local ip cpu mem city suffix zone_id
-  ip="$(get_public_ip)"; [[ -n "$ip" ]] || { err "无法检测公网 IPv4"; exit 1; }
-  cpu="$(detect_cpu_flavor)"; mem="$(detect_mem_label)"; city="$(detect_city_code "$ip")"; suffix="${ip##*.}"
-  TLS_DOMAIN="${cpu}${mem}-${suffix}-${city}.${BASE_DOMAIN}"
-  zone_id="${CF_Zone_ID:-$(resolve_zone_id "$BASE_DOMAIN" "$CF_Token")}"
-  [[ -n "$zone_id" ]] || { err "无法解析 Cloudflare Zone ID"; exit 1; }
+  need_cmd curl
+  need_cmd jq
+
+  local ip cpu mem country zone_id
+  ip="$(get_public_ip)"
+  [[ -n "$ip" ]] || { err "无法检测到公网 IPv4"; exit 1; }
+  cpu="$(detect_cpu_flavor)"
+  mem="$(detect_mem_label)"
+  city="$(detect_city_code "$ip")"
+  ip_suffix="${ip##*.}"
+  TLS_DOMAIN="${cpu}${mem}-${ip_suffix}-${city}.${BASE_DOMAIN}"
+
+  if [[ -n "$CF_Zone_ID" ]]; then
+    zone_id="$CF_Zone_ID"
+  else
+    zone_id="$(resolve_zone_id "$BASE_DOMAIN" "$CF_Token")"
+  fi
+  [[ -n "$zone_id" ]] || { err "无法为 $BASE_DOMAIN 解析 Cloudflare zone id"; exit 1; }
   CF_Zone_ID="$zone_id"
-  upsert_cloudflare_a_record "$TLS_DOMAIN" "$CF_Zone_ID" "$CF_Token" "$ip"
-  ok "已选择自动域名: $TLS_DOMAIN"
+  upsert_cloudflare_a_record "$TLS_DOMAIN" "$CF_Zone_ID" "$CF_Token" "$ip" "false"
+  log "已选择自动域名: $TLS_DOMAIN"
+}
+
+validate_true_false() {
+  local name="$1"
+  local value="$2"
+  case "$value" in
+    true|false) ;;
+    *)
+      err "$name 必须是 true 或 false，当前值: $value"
+      exit 1
+      ;;
+  esac
 }
 
 ensure_docker() {
-  if command -v docker >/dev/null 2>&1; then ok "Docker 已安装: $(docker --version)"; return; fi
-  log "未找到 Docker，正在自动安装 Docker Engine..."
-  [[ -f /etc/os-release ]] || { err "系统不受支持：未找到 /etc/os-release"; exit 1; }
+  if command -v docker >/dev/null 2>&1; then
+    log "已安装 docker: $(docker --version)"
+    return 0
+  fi
+
+  log "未找到 docker，正在安装 docker engine"
+  if [[ ! -f /etc/os-release ]]; then
+    err "系统不受支持: 未找到 /etc/os-release"
+    exit 1
+  fi
+
   # shellcheck disable=SC1091
   . /etc/os-release
-  local distro="${ID:-}" codename="${VERSION_CODENAME:-}"
-  [[ "$distro" == "ubuntu" || "$distro" == "debian" ]] || { err "自动安装仅支持 Ubuntu/Debian，当前系统: ${distro:-unknown}"; exit 1; }
-  [[ -n "$codename" ]] || { err "无法识别系统代号，无法配置 Docker apt 源"; exit 1; }
+  local distro="${ID:-}"
+  local codename="${VERSION_CODENAME:-}"
+  if [[ "$distro" != "ubuntu" && "$distro" != "debian" ]]; then
+    err "自动安装不支持该系统: ${distro:-unknown} (仅支持 ubuntu/debian)"
+    exit 1
+  fi
+  if [[ -z "$codename" ]]; then
+    err "无法识别系统代号，无法配置 docker apt 源"
+    exit 1
+  fi
+
   run_root apt-get update -y
   run_root apt-get install -y ca-certificates curl gnupg
   run_root install -m 0755 -d /etc/apt/keyrings
@@ -509,28 +550,59 @@ ensure_docker() {
   run_root apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   run_root systemctl enable docker >/dev/null 2>&1 || true
   run_root systemctl restart docker
-  ok "Docker 安装完成"
+  log "docker installation completed"
 }
 
 ensure_host_tools() {
   local missing=()
   command -v curl >/dev/null 2>&1 || missing+=(curl)
   command -v jq >/dev/null 2>&1 || missing+=(jq)
-  [[ ${#missing[@]} -eq 0 ]] && return
-  command -v apt-get >/dev/null 2>&1 || { err "缺少命令: ${missing[*]}"; exit 1; }
+  command -v qrencode >/dev/null 2>&1 || missing+=(qrencode)
+  [[ "${#missing[@]}" -eq 0 ]] && return 0
+  command -v apt-get >/dev/null 2>&1 || {
+    err "缺少命令: ${missing[*]}，请先手动安装"
+    exit 1
+  }
   log "正在安装必要工具: ${missing[*]}"
   run_root apt-get update -y
   run_root apt-get install -y "${missing[@]}"
 }
 
+cmd_update_script() {
+  need_cmd curl
+  local temp_file target
+  temp_file="$(mktemp)"
+  target="/usr/local/bin/swd"
+  if ! curl -fsSL "$DEPLOY_SCRIPT_URL" -o "$temp_file"; then
+    rm -f "$temp_file"
+    err "管理脚本下载失败"
+    return 1
+  fi
+  if ! bash -n "$temp_file"; then
+    rm -f "$temp_file"
+    err "下载的管理脚本语法校验失败，未替换现有脚本"
+    return 1
+  fi
+  if [[ -f "$target" ]] && cmp -s "$temp_file" "$target"; then
+    rm -f "$temp_file"
+    log "管理脚本已是最新版本"
+    return 0
+  fi
+  run_root install -m 0755 "$temp_file" "$target"
+  rm -f "$temp_file"
+  log "管理脚本已更新: $target（下次运行生效）"
+}
+
 load_existing_env() {
-  [[ -f "$ENV_FILE" ]] || return
+  [[ -f "$ENV_FILE" ]] || return 0
   local key value
   while IFS='=' read -r key value || [[ -n "$key" ]]; do
-    key="${key%$'\r'}"; value="${value%$'\r'}"
+    key="${key%$'\r'}"
+    value="${value%$'\r'}"
     case "$key" in
       HY2_PORT|VLESS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|CF_Token|CF_Account_ID|CF_Zone_ID)
-        printf -v "$key" '%s' "$value" ;;
+        printf -v "$key" '%s' "$value"
+        ;;
     esac
   done < "$ENV_FILE"
 }
@@ -538,76 +610,106 @@ load_existing_env() {
 collect_bootstrap_inputs() {
   local mode="${1:-install}"
   if [[ "$mode" == "install" ]]; then
-    APP_DIR="$(ask_input "部署目录" "$APP_DIR")"; refresh_paths
-    if is_deployed; then err "该目录已有部署，请选择修改配置"; return 1; fi
+    APP_DIR="$(ask_input "部署目录" "$APP_DIR")"
+    refresh_paths
+    if [[ -f "$ENV_FILE" || -f "$COMPOSE_FILE" ]]; then
+      err "部署目录已有配置，请从主菜单选择 '修改配置'"
+      return 1
+    fi
   fi
-  printf '\n%sTLS 配置%s\n' "$C_BOLD" "$C_RESET" >&2
-  AUTO_TLS="$(normalize_bool "$(ask_choice "启用自动 TLS (y/n)" "$AUTO_TLS")")"
-  if [[ "$AUTO_TLS" == "true" ]]; then
-    printf '%s需要 Cloudflare API Token（Zone/DNS/Edit 权限）。%s\n' "$C_DIM" "$C_RESET" >&2
+
+  printf "\n自动 TLS 配置\n" >&2
+  printf "需要 Cloudflare API Token（Zone / DNS / Edit 权限）。\n" >&2
+  printf "申请地址: https://dash.cloudflare.com/profile/api-tokens\n" >&2
+  AUTO_TLS="true"
+  CF_Token="$(ask_secret "Cloudflare API Token" "$CF_Token")"
+  while [[ -z "$CF_Token" ]]; do
     CF_Token="$(ask_secret "Cloudflare API Token" "$CF_Token")"
-    while [[ -z "$CF_Token" ]]; do err "Cloudflare API Token 不能为空"; CF_Token="$(ask_secret "Cloudflare API Token")"; done
-    AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
-    if [[ "$AUTO_DOMAIN" == "true" ]]; then BASE_DOMAIN="$(ask_input "Cloudflare 主域名 (example.com)" "$BASE_DOMAIN")"; TLS_DOMAIN=""
-    else TLS_DOMAIN="$(ask_input "TLS 域名" "$TLS_DOMAIN")"; fi
-    ACME_EMAIL="$(ask_input "证书通知邮箱 (建议填写)" "$ACME_EMAIL")"
+    [[ -n "$CF_Token" ]] || err "Cloudflare API Token 不能为空"
+  done
+  AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
+  if [[ "$AUTO_DOMAIN" == "true" ]]; then
+    BASE_DOMAIN="$(ask_input "Cloudflare 主域名 (example.com)" "$BASE_DOMAIN")"
+    TLS_DOMAIN=""
   else
-    AUTO_DOMAIN="false"; CF_Token=""; TLS_DOMAIN="$(ask_input "TLS 域名" "$TLS_DOMAIN")"
-    warn "请先将 fullchain.pem 和 privkey.pem 放入 $APP_DIR/certs/"
+    TLS_DOMAIN="$(ask_input "TLS 域名" "$TLS_DOMAIN")"
   fi
-  printf '\n%s协议 / 端口配置%s\n' "$C_BOLD" "$C_RESET" >&2
-  ENABLE_HY2="$(normalize_bool "$(ask_choice "启用 HY2 (y/n)" "$ENABLE_HY2")")"
-  [[ "$ENABLE_HY2" == "true" ]] && HY2_PORT="$(ask_port "HY2 端口" "$HY2_PORT")"
-  ENABLE_VLESS="$(normalize_bool "$(ask_choice "启用 VLESS (y/n)" "$ENABLE_VLESS")")"
-  [[ "$ENABLE_VLESS" == "true" ]] && VLESS_PORT="$(ask_port "VLESS 端口" "$VLESS_PORT")"
-  MIXED_PORT="$(ask_port "本机 Mixed 代理端口（仅 127.0.0.1）" "$MIXED_PORT")"
+  ACME_EMAIL="$(ask_input "证书通知邮箱 (建议填写)" "$ACME_EMAIL")"
+
+  printf "\n协议 / 端口配置\n" >&2
+  ENABLE_HY2="$(normalize_bool "$(ask_choice "启用 HY2 (y/n 或 true/false)" "${ENABLE_HY2}")")"
+  if [[ "$ENABLE_HY2" == "true" ]]; then
+    HY2_PORT="$(ask_input "HY2 端口" "$HY2_PORT")"
+  fi
+  ENABLE_VLESS="$(normalize_bool "$(ask_choice "启用 VLESS (y/n 或 true/false)" "${ENABLE_VLESS}")")"
+  if [[ "$ENABLE_VLESS" == "true" ]]; then
+    VLESS_PORT="$(ask_input "VLESS 端口" "$VLESS_PORT")"
+  fi
+  MIXED_PORT="$(ask_input "本机 Mixed 代理端口 (HTTP+SOCKS5，仅 127.0.0.1)" "$MIXED_PORT")"
+
   if [[ "$(normalize_bool "$(ask_choice "配置高级选项 (y/n)" "n")")" == "true" ]]; then
     IMAGE="$(ask_input "镜像地址" "$IMAGE")"
-    NODE_NAME="$(ask_input "节点名称（留空自动生成）" "$NODE_NAME")"
-    AUTH_UUID="$(ask_input "AUTH_UUID（留空自动生成）" "$AUTH_UUID")"
-    HY2_PASSWORD="$(ask_secret "HY2_PASSWORD（可选）" "$HY2_PASSWORD")"
-    VLESS_UUID="$(ask_input "VLESS_UUID（可选）" "$VLESS_UUID")"
-    WARP_LICENSE_KEY="$(ask_secret "WARP_LICENSE_KEY（可选）" "$WARP_LICENSE_KEY")"
+    AUTH_UUID="$(ask_input "AUTH_UUID (留空自动生成)" "$AUTH_UUID")"
+    HY2_PASSWORD="$(ask_secret "HY2_PASSWORD (可选)" "$HY2_PASSWORD")"
+    VLESS_UUID="$(ask_input "VLESS_UUID (可选)" "$VLESS_UUID")"
+    WARP_LICENSE_KEY="$(ask_secret "WARP_LICENSE_KEY (可选)" "$WARP_LICENSE_KEY")"
     TLS_ISSUE_RETRIES="$(ask_input "TLS 签发重试次数" "$TLS_ISSUE_RETRIES")"
     TLS_RENEW_INTERVAL="$(ask_input "TLS 续期间隔秒数" "$TLS_RENEW_INTERVAL")"
   fi
 }
 
 confirm_config() {
-  local domain_label="$TLS_DOMAIN" node_label
+  local domain_label="$TLS_DOMAIN"
   [[ "$AUTO_DOMAIN" == "true" ]] && domain_label="自动生成 (*.$BASE_DOMAIN)"
-  node_label="${NODE_NAME:-自动生成}"
-  printf '\n%s配置摘要%s\n' "$C_BOLD" "$C_RESET" >&2
-  printf '  部署目录: %s\n  镜像: %s\n  节点名: %s\n  TLS 域名: %s\n' "$APP_DIR" "$IMAGE" "$node_label" "$domain_label" >&2
-  printf '  TLS 模式: %s\n' "$([[ "$AUTO_TLS" == "true" ]] && printf '自动签发（Cloudflare Token 已配置）' || printf '手动证书')" >&2
-  printf '  HY2: %s%s\n  VLESS: %s%s\n  Mixed: %s（仅本机）\n' \
-    "$ENABLE_HY2" "$([[ "$ENABLE_HY2" == true ]] && printf "，端口 $HY2_PORT")" \
-    "$ENABLE_VLESS" "$([[ "$ENABLE_VLESS" == true ]] && printf "，端口 $VLESS_PORT")" "$MIXED_PORT" >&2
-  printf '  WARP+: %s\n' "$([[ -n "$WARP_LICENSE_KEY" ]] && printf '已配置' || printf '普通 WARP')" >&2
+  printf "\n配置摘要\n" >&2
+  printf "  部署目录: %s\n" "$APP_DIR" >&2
+  printf "  TLS 域名: %s\n" "$domain_label" >&2
+  printf "  Cloudflare Token: 已配置（不会显示）\n" >&2
+  printf "  HY2: %s (端口 %s)\n" "$ENABLE_HY2" "$HY2_PORT" >&2
+  printf "  VLESS: %s (端口 %s)\n" "$ENABLE_VLESS" "$VLESS_PORT" >&2
+  printf "  Mixed 端口: %s (仅本机)\n" "$MIXED_PORT" >&2
   [[ "$(normalize_bool "$(ask_choice "确认并继续 (y/n)" "y")")" == "true" ]]
 }
 
 validate_positive_int() {
-  local name="$1" value="$2"
-  [[ "$value" =~ ^[1-9][0-9]*$ ]] || { err "$name 必须是正整数，当前值: $value"; exit 1; }
+  local name="$1"
+  local value="$2"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || {
+    err "$name 必须是正整数，当前值: $value"
+    exit 1
+  }
 }
 
 validate_port() {
-  local name="$1" value="$2"
+  local name="$1"
+  local value="$2"
   validate_positive_int "$name" "$value"
-  (( 10#$value <= 65535 )) || { err "$name 必须在 1-65535 范围内，当前值: $value"; exit 1; }
+  (( 10#$value <= 65535 )) || {
+    err "$name 必须在 1-65535 范围内，当前值: $value"
+    exit 1
+  }
 }
 
 validate_env_value() {
-  local name="$1" value="$2"
-  [[ "$value" =~ ^[A-Za-z0-9_./:@%+,-]*$ ]] || { err "$name 包含不支持的字符；请仅使用字母、数字及 _ . / : @ % + , -"; exit 1; }
+  local name="$1"
+  local value="$2"
+  [[ "$value" =~ ^[A-Za-z0-9_./:@%+,-]*$ ]] || {
+    err "$name 包含不支持的字符；请仅使用字母、数字及 _ . / : @ % + , -"
+    exit 1
+  }
 }
 
 validate_config() {
+  validate_true_false "ENABLE_HY2" "$ENABLE_HY2"
+  validate_true_false "ENABLE_VLESS" "$ENABLE_VLESS"
+  validate_true_false "AUTO_DOMAIN" "$AUTO_DOMAIN"
   validate_bool "$AUTO_TLS"
-  [[ "$ENABLE_HY2" == "true" || "$ENABLE_VLESS" == "true" ]] || { err "至少启用一种协议"; exit 1; }
-  if [[ "$ENABLE_HY2" == "true" ]]; then validate_port "HY2_PORT" "$HY2_PORT"; fi
-  if [[ "$ENABLE_VLESS" == "true" ]]; then validate_port "VLESS_PORT" "$VLESS_PORT"; fi
+  if [[ "$ENABLE_HY2" == "true" ]]; then
+    validate_port "HY2_PORT" "$HY2_PORT"
+  fi
+  if [[ "$ENABLE_VLESS" == "true" ]]; then
+    validate_port "VLESS_PORT" "$VLESS_PORT"
+  fi
   validate_port "MIXED_PORT" "$MIXED_PORT"
   validate_positive_int "TLS_ISSUE_RETRIES" "$TLS_ISSUE_RETRIES"
   validate_positive_int "TLS_RENEW_INTERVAL" "$TLS_RENEW_INTERVAL"
@@ -625,37 +727,66 @@ validate_config() {
   validate_env_value "CF_Token" "$CF_Token"
   validate_env_value "CF_Account_ID" "$CF_Account_ID"
   validate_env_value "CF_Zone_ID" "$CF_Zone_ID"
-  [[ "$ENABLE_HY2" != "true" || "$MIXED_PORT" != "$HY2_PORT" ]] || { err "HY2 与 Mixed 端口不能重复"; exit 1; }
-  [[ "$ENABLE_VLESS" != "true" || "$MIXED_PORT" != "$VLESS_PORT" ]] || { err "VLESS 与 Mixed 端口不能重复"; exit 1; }
-  [[ "$ENABLE_HY2" != "true" || "$ENABLE_VLESS" != "true" || "$HY2_PORT" != "$VLESS_PORT" ]] || { err "HY2 与 VLESS 端口不能重复"; exit 1; }
+  if [[ "$ENABLE_HY2" != "true" && "$ENABLE_VLESS" != "true" ]]; then
+    err "至少要启用一种协议 (ENABLE_HY2/ENABLE_VLESS)"
+    exit 1
+  fi
   if [[ "$ENABLE_VLESS" == "true" ]]; then
     local effective_vless_uuid="${VLESS_UUID:-$AUTH_UUID}"
-    if [[ -n "$effective_vless_uuid" ]] && ! [[ "$effective_vless_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    if [[ -n "$effective_vless_uuid" ]] &&
+       ! [[ "$effective_vless_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
       err "VLESS_UUID/AUTH_UUID 不是有效的 UUID"
       exit 1
     fi
   fi
-  if [[ "$AUTO_TLS" == "true" ]]; then
-    [[ -n "$CF_Token" ]] || { err "自动 TLS 需要 Cloudflare API Token"; exit 1; }
-    [[ "$AUTO_DOMAIN" == "true" || -n "$TLS_DOMAIN" ]] || { err "请填写 TLS 域名"; exit 1; }
-  else
-    [[ -s "$APP_DIR/certs/fullchain.pem" && -s "$APP_DIR/certs/privkey.pem" ]] || { err "手动证书模式需要 certs/fullchain.pem 与 certs/privkey.pem"; exit 1; }
+  if [[ "$ENABLE_HY2" == "true" && "$MIXED_PORT" == "$HY2_PORT" ]] ||
+     [[ "$ENABLE_VLESS" == "true" && "$MIXED_PORT" == "$VLESS_PORT" ]] ||
+     [[ "$ENABLE_HY2" == "true" && "$ENABLE_VLESS" == "true" && "$HY2_PORT" == "$VLESS_PORT" ]]; then
+    err "HY2、VLESS 和 Mixed 端口不能重复"
+    exit 1
   fi
+
+  if [[ "$AUTO_TLS" == "true" ]]; then
+    if [[ "$AUTO_DOMAIN" != "true" ]]; then
+      [[ -n "$TLS_DOMAIN" ]] || { err "AUTO_TLS=true 且 AUTO_DOMAIN=false 时必须填写 TLS_DOMAIN"; exit 1; }
+    fi
+    [[ -n "$CF_Token" ]] || { err "AUTO_TLS=true 时必须填写 CF_Token"; exit 1; }
+  else
+    [[ -s "$APP_DIR/certs/fullchain.pem" ]] || {
+      err "手动证书模式需要 $APP_DIR/certs/fullchain.pem"
+      exit 1
+    }
+    [[ -s "$APP_DIR/certs/privkey.pem" ]] || {
+      err "手动证书模式需要 $APP_DIR/certs/privkey.pem"
+      exit 1
+    }
+  fi
+
   resolve_auth_values
 }
 
 write_compose() {
   local ports_block=""
-  [[ "$ENABLE_HY2" == "true" ]] && ports_block+=$'\n      - "${HY2_PORT:-32443}:${HY2_PORT:-32443}/tcp"\n      - "${HY2_PORT:-32443}:${HY2_PORT:-32443}/udp"'
-  [[ "$ENABLE_VLESS" == "true" ]] && ports_block+=$'\n      - "${VLESS_PORT:-38443}:${VLESS_PORT:-38443}/tcp"'
-  ports_block+=$'\n      - "127.0.0.1:${MIXED_PORT:-1080}:${MIXED_PORT:-1080}/tcp"'
-  mkdir -p "$APP_DIR"
-  printf '%s\n' "services:
+  if [[ "$ENABLE_HY2" == "true" ]]; then
+    ports_block="${ports_block}
+      - \"\${HY2_PORT:-32443}:\${HY2_PORT:-32443}/tcp\"
+      - \"\${HY2_PORT:-32443}:\${HY2_PORT:-32443}/udp\""
+  fi
+  if [[ "$ENABLE_VLESS" == "true" ]]; then
+    ports_block="${ports_block}
+      - \"\${VLESS_PORT:-38443}:\${VLESS_PORT:-38443}/tcp\""
+  fi
+  ports_block="${ports_block}
+      - \"127.0.0.1:\${MIXED_PORT:-1080}:\${MIXED_PORT:-1080}/tcp\""
+
+  cat >"$COMPOSE_FILE" <<EOF
+services:
   singbox-warp:
-    image: $IMAGE
+    image: ${IMAGE}
     container_name: singbox-warp
     restart: unless-stopped
-    ports:$ports_block
+    ports:
+${ports_block}
     volumes:
       - ./data:/var/lib/wgcf
       - ./certs:/etc/sing-box/certs
@@ -667,11 +798,16 @@ write_compose() {
     mem_limit: 512m
     pids_limit: 256
     healthcheck:
-      test: [\"CMD-SHELL\", \"test -s /run/sing-box.pid && kill -0 \\\"\\\$(cat /run/sing-box.pid)\\\" && curl -fsS --max-time 3 --proxy \\\"socks5h://127.0.0.1:\${MIXED_PORT:-1080}\\\" https://cp.cloudflare.com/ >/dev/null\"]
+      test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"\$(cat /run/sing-box.pid)\""]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
-      start_period: 90s
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       - HY2_PORT=\${HY2_PORT:-32443}
       - VLESS_PORT=\${VLESS_PORT:-38443}
@@ -692,11 +828,13 @@ write_compose() {
       - WARP_LICENSE_KEY=\${WARP_LICENSE_KEY:-}
       - CF_Token=\${CF_Token:-}
       - CF_Account_ID=\${CF_Account_ID:-}
-      - CF_Zone_ID=\${CF_Zone_ID:-}" > "$COMPOSE_FILE"
+      - CF_Zone_ID=\${CF_Zone_ID:-}
+EOF
 }
 
 write_env() {
-  printf '%s\n' "HY2_PORT=$HY2_PORT
+  cat >"$ENV_FILE" <<EOF
+HY2_PORT=$HY2_PORT
 VLESS_PORT=$VLESS_PORT
 MIXED_PORT=$MIXED_PORT
 ENABLE_HY2=$ENABLE_HY2
@@ -717,310 +855,666 @@ TLS_RENEW_INTERVAL=$TLS_RENEW_INTERVAL
 WARP_LICENSE_KEY=$WARP_LICENSE_KEY
 CF_Token=$CF_Token
 CF_Account_ID=$CF_Account_ID
-CF_Zone_ID=$CF_Zone_ID" > "$ENV_FILE"
+CF_Zone_ID=$CF_Zone_ID
+EOF
   chmod 600 "$ENV_FILE"
-  ok "已保存配置: $ENV_FILE"
+  log "created .env: $ENV_FILE"
 }
 
-backup_config() {
-  ensure_state_dir
-  if [[ -d "$CONFIG_BACKUP_DIR" && ! -w "$CONFIG_BACKUP_DIR" ]]; then
-    run_root chown "$(id -u):$(id -g)" "$CONFIG_BACKUP_DIR" 2>/dev/null || true
-  fi
-  if [[ ! -d "$CONFIG_BACKUP_DIR" ]]; then
-    run_root install -d -m 0755 -o "$(id -u)" -g "$(id -g)" "$CONFIG_BACKUP_DIR"
-  fi
-  if [[ -w "$CONFIG_BACKUP_DIR" ]]; then
-    cp -f "$ENV_FILE" "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME"
-    cp -f "$COMPOSE_FILE" "$CONFIG_BACKUP_DIR/$COMPOSE_FILE_NAME"
-  else
-    run_root cp -f "$ENV_FILE" "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME"
-    run_root cp -f "$COMPOSE_FILE" "$CONFIG_BACKUP_DIR/$COMPOSE_FILE_NAME"
-    run_root chown "$(id -u):$(id -g)" "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME" "$CONFIG_BACKUP_DIR/$COMPOSE_FILE_NAME" 2>/dev/null || true
-  fi
-}
-
-restore_config() {
-  [[ -f "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME" && -f "$CONFIG_BACKUP_DIR/$COMPOSE_FILE_NAME" ]] || return 1
-  if [[ -r "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME" && -r "$CONFIG_BACKUP_DIR/$COMPOSE_FILE_NAME" && -w "$APP_DIR" ]]; then
-    cp -f "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME" "$ENV_FILE"
-    cp -f "$CONFIG_BACKUP_DIR/$COMPOSE_FILE_NAME" "$COMPOSE_FILE"
-  else
-    run_root cp -f "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME" "$ENV_FILE"
-    run_root cp -f "$CONFIG_BACKUP_DIR/$COMPOSE_FILE_NAME" "$COMPOSE_FILE"
-    run_root chown "$(id -u):$(id -g)" "$ENV_FILE" "$COMPOSE_FILE" 2>/dev/null || true
-  fi
-  chmod 600 "$ENV_FILE" 2>/dev/null || run_root chmod 600 "$ENV_FILE"
-  dcc compose up -d
-  warn "已恢复修改前的配置"
-}
-
-ensure_state_dir() {
-  if [[ -d "$STATE_DIR" && -w "$STATE_DIR" ]]; then
+write_env_if_missing() {
+  if [[ -f "$ENV_FILE" ]]; then
+    log ".env exists, keep current file: $ENV_FILE"
     return 0
   fi
-  run_root install -d -m 0755 -o "$(id -u)" -g "$(id -g)" "$STATE_DIR"
-}
-
-write_state_file() {
-  local file="$1" content="$2"
-  ensure_state_dir
-  if [[ -w "$file" || ! -e "$file" && -w "$STATE_DIR" ]]; then
-    printf '%s\n' "$content" > "$file"
-  else
-    printf '%s\n' "$content" | run_root tee "$file" >/dev/null
-    run_root chown "$(id -u):$(id -g)" "$file" 2>/dev/null || true
-  fi
+  write_env
 }
 
 record_current_image_for_rollback() {
-  ensure_state_dir
-  if dc inspect singbox-warp >/dev/null 2>&1; then
-    local image_id configured_image repo_digest
-    image_id="$(dc inspect singbox-warp --format '{{.Image}}')"
-    configured_image="$(dc inspect singbox-warp --format '{{.Config.Image}}')"
+  mkdir -p "$STATE_DIR"
+  if docker inspect singbox-warp >/dev/null 2>&1; then
+    local image_id repo_digest configured_image
+    image_id="$(docker inspect singbox-warp --format '{{.Image}}')"
+    configured_image="$(docker inspect singbox-warp --format '{{.Config.Image}}')"
     if [[ "$configured_image" != sha256:* && "$configured_image" != *@sha256:* ]]; then
-      write_state_file "$UPDATE_IMAGE_FILE" "$configured_image"
+      printf '%s\n' "$configured_image" >"$UPDATE_IMAGE_FILE"
     fi
-    repo_digest="$(dc image inspect "$image_id" --format '{{index .RepoDigests 0}}' 2>/dev/null || true)"
-    write_state_file "$ROLLBACK_FILE" "${repo_digest:-$image_id}"
+    repo_digest="$(docker image inspect "$image_id" --format '{{index .RepoDigests 0}}' 2>/dev/null || true)"
+    if [[ -n "$repo_digest" && "$repo_digest" != "<no value>" ]]; then
+      printf '%s\n' "$repo_digest" >"$ROLLBACK_FILE"
+    else
+      printf '%s\n' "$image_id" >"$ROLLBACK_FILE"
+    fi
+  elif [[ -f "$COMPOSE_FILE" ]]; then
+    grep -E '^\s*image:\s*' "$COMPOSE_FILE" | head -n1 | sed -E 's/^\s*image:\s*//' >"$ROLLBACK_FILE" || true
   fi
 }
 
+backup_config() {
+  mkdir -p "$CONFIG_BACKUP_DIR"
+  cp -f "$ENV_FILE" "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME"
+  cp -f "$COMPOSE_FILE" "$CONFIG_BACKUP_DIR/$COMPOSE_FILE_NAME"
+}
+
+restore_config() {
+  [[ -f "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME" && -f "$CONFIG_BACKUP_DIR/$COMPOSE_FILE_NAME" ]] || {
+    err "没有可恢复的配置备份"
+    return 1
+  }
+  cp -f "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME" "$ENV_FILE"
+  cp -f "$CONFIG_BACKUP_DIR/$COMPOSE_FILE_NAME" "$COMPOSE_FILE"
+  chmod 600 "$ENV_FILE"
+  (
+    cd "$APP_DIR"
+    docker compose up -d
+  )
+  log "已恢复修改前的配置"
+}
+
+create_backup_archive() {
+  local archive="$1"
+  local items=()
+  local item
+  for item in "$ENV_FILE_NAME" "$COMPOSE_FILE_NAME" data certs acme "$STATE_DIR_NAME"; do
+    [[ -e "$APP_DIR/$item" ]] && items+=("$item")
+  done
+  [[ "${#items[@]}" -gt 0 ]] || {
+    err "部署目录中没有可备份的数据"
+    return 1
+  }
+  mkdir -p "$(dirname "$archive")"
+  tar -czf "$archive" -C "$APP_DIR" "${items[@]}"
+  chmod 600 "$archive"
+}
+
+validate_backup_archive() {
+  local archive="$1"
+  local entry
+  tar -tzf "$archive" >/dev/null 2>&1 || {
+    err "备份归档损坏或格式不受支持: $archive"
+    return 1
+  }
+  if ! tar -tvzf "$archive" | awk 'substr($1, 1, 1) == "l" || substr($1, 1, 1) == "h" { exit 1 }'; then
+    err "备份包含符号链接或硬链接，拒绝恢复"
+    return 1
+  fi
+  while IFS= read -r entry; do
+    entry="${entry#./}"
+    case "$entry" in
+      ""|..|../*|*/..|*/../*|/*)
+        err "备份包含不安全路径: $entry"
+        return 1
+        ;;
+    esac
+    case "$entry" in
+      "$ENV_FILE_NAME"|"$COMPOSE_FILE_NAME"|data|data/*|certs|certs/*|acme|acme/*|"$STATE_DIR_NAME"|"$STATE_DIR_NAME"/*) ;;
+      *)
+        err "备份包含不允许的路径: $entry"
+        return 1
+        ;;
+    esac
+  done < <(tar -tzf "$archive")
+}
+
+cmd_backup() {
+  need_cmd tar
+  [[ -d "$APP_DIR" ]] || { err "部署目录不存在: $APP_DIR"; return 1; }
+  local archive was_running="false"
+  archive="$BACKUP_DIR/singbox-warp-$(date +%Y%m%d-%H%M%S).tar.gz"
+  if command -v docker >/dev/null 2>&1 && docker inspect singbox-warp --format '{{.State.Running}}' 2>/dev/null | grep -Fxq true; then
+    was_running="true"
+    docker stop singbox-warp >/dev/null
+  fi
+  if ! create_backup_archive "$archive"; then
+    if [[ "$was_running" == "true" ]]; then
+      docker start singbox-warp >/dev/null || true
+    fi
+    return 1
+  fi
+  if [[ "$was_running" == "true" ]]; then
+    docker start singbox-warp >/dev/null
+    wait_healthy || return 1
+  fi
+  log "备份完成: $archive"
+}
+
+cmd_restore() {
+  need_cmd tar
+  need_cmd docker
+  local latest="" archive pre_restore
+  if [[ -d "$BACKUP_DIR" ]]; then
+    latest="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'singbox-warp-*.tar.gz' | sort | tail -n1)"
+  fi
+  archive="$(ask_input "备份文件路径" "$latest")"
+  [[ -f "$archive" ]] || { err "备份文件不存在: $archive"; return 1; }
+  validate_backup_archive "$archive" || return 1
+  if [[ "$(normalize_bool "$(ask_choice "恢复会覆盖当前配置并重启服务，继续 (y/n)" "n")")" != "true" ]]; then
+    log "已取消恢复"
+    return 0
+  fi
+
+  pre_restore="$(mktemp --suffix=.tar.gz)"
+  if [[ -f "$COMPOSE_FILE" ]]; then
+    (cd "$APP_DIR" && docker compose down)
+  fi
+  if ! create_backup_archive "$pre_restore"; then
+    rm -f "$pre_restore"
+    err "无法创建恢复前备份，已中止"
+    (cd "$APP_DIR" && docker compose up -d) || true
+    return 1
+  fi
+  if ! tar -xzf "$archive" -C "$APP_DIR"; then
+    err "恢复归档失败，正在还原原配置"
+    tar -xzf "$pre_restore" -C "$APP_DIR"
+    rm -f "$pre_restore"
+    (cd "$APP_DIR" && docker compose up -d)
+    return 1
+  fi
+  chmod 600 "$ENV_FILE"
+  if ! (cd "$APP_DIR" && docker compose up -d) || ! wait_healthy; then
+    err "恢复后的服务不健康，正在回退"
+    (cd "$APP_DIR" && docker compose down) || true
+    tar -xzf "$pre_restore" -C "$APP_DIR"
+    (cd "$APP_DIR" && docker compose up -d)
+    wait_healthy || true
+    rm -f "$pre_restore"
+    return 1
+  fi
+  rm -f "$pre_restore"
+  log "备份恢复完成: $archive"
+}
+
 wait_healthy() {
-  local attempts="${1:-30}" status attempt
-  for attempt in $(seq 1 "$attempts"); do
-    status="$(dc inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' singbox-warp 2>/dev/null || true)"
-    if [[ "$status" == "healthy" ]]; then ok "容器健康检查通过"; return 0; fi
-    printf '\r%s等待服务就绪: %s/%s（%s）%s' "$C_DIM" "$attempt" "$attempts" "$status" "$C_RESET" >&2
+  local i
+  for i in $(seq 1 30); do
+    local s
+    s="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' singbox-warp 2>/dev/null || true)"
+    log "health check $i/30: $s"
+    if [[ "$s" == "healthy" ]]; then
+      return 0
+    fi
     sleep 2
   done
-  printf '\n' >&2
-  err "容器未通过健康检查"
-  dc logs --tail 80 singbox-warp || true
+  err "container is not healthy"
+  docker ps --format '{{.Names}} {{.Status}} {{.Image}}' | grep '^singbox-warp ' || true
+  docker logs --tail 80 singbox-warp || true
   return 1
 }
 
+cmd_init() {
+  need_cmd docker
+  mkdir -p "$APP_DIR"/{data,certs,acme}
+  write_compose
+  write_env
+  log "初始化完成: $APP_DIR"
+  log "下一步: 编辑 $ENV_FILE，然后运行: $0 deploy"
+}
+
+cmd_deploy() {
+  need_cmd docker
+  [[ -f "$COMPOSE_FILE" ]] || { err "缺少 compose 文件: $COMPOSE_FILE"; exit 1; }
+  [[ -f "$ENV_FILE" ]] || { err "缺少环境变量文件: $ENV_FILE"; exit 1; }
+
+  load_existing_env
+  validate_config
+  prepare_auto_domain
+  finalize_node_name
+  write_env
+  record_current_image_for_rollback
+
+  (
+    cd "$APP_DIR"
+    docker compose pull
+    docker compose up -d
+  )
+  wait_healthy || return 1
+  log "部署完成"
+}
+
 cmd_status() {
-  if ! container_running; then warn "singbox-warp 容器未运行"; return 1; fi
-  dc inspect singbox-warp --format '镜像: {{.Config.Image}}'
-  dc inspect singbox-warp --format '健康状态: {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
+  need_cmd docker
+  [[ -f "$ENV_FILE" ]] && load_existing_env
+  docker ps --format '{{.Names}} {{.Status}} {{.Image}}' | grep '^singbox-warp ' || {
+    err "singbox-warp 容器未运行"
+    exit 1
+  }
+  printf '\n状态总览\n'
+  printf '  部署目录: %s\n' "$APP_DIR"
+  printf '  域名: %s\n' "${TLS_DOMAIN:-未配置}"
+  printf '  HY2: %s (端口 %s)\n' "$ENABLE_HY2" "$HY2_PORT"
+  printf '  VLESS: %s (端口 %s)\n' "$ENABLE_VLESS" "$VLESS_PORT"
+  printf '  Mixed: 127.0.0.1:%s\n' "$MIXED_PORT"
+  docker inspect singbox-warp --format '  镜像: {{.Config.Image}}'
+  docker inspect singbox-warp --format '  镜像 ID: {{.Image}}'
+  docker inspect singbox-warp --format '  健康状态: {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
+  printf '  sing-box: %s\n' "$(docker exec singbox-warp sing-box version 2>/dev/null | head -n1 || echo unknown)"
+  printf '  wgcf: %s\n' "$(docker exec singbox-warp wgcf --version 2>/dev/null | head -n1 || echo unknown)"
+  if docker exec singbox-warp test -s "$TLS_CERT_PATH" >/dev/null 2>&1; then
+    printf '  证书到期: %s\n' "$(docker exec singbox-warp openssl x509 -in "$TLS_CERT_PATH" -noout -enddate 2>/dev/null | sed 's/^notAfter=//')"
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    printf '  WARP 出口 IP: %s\n' "$(curl -fsSL --max-time 10 --proxy "socks5h://127.0.0.1:$MIXED_PORT" https://api.ipify.org 2>/dev/null || echo unavailable)"
+  fi
 }
 
 cmd_show_nodes() {
   need_cmd docker
   need_cmd jq
-  if ! container_running; then warn "容器未运行，无法读取节点链接"; return 1; fi
-  local config hy2_password hy2_port hy2_sni hy2_tag vless_uuid vless_port vless_sni vless_tag vless_flow
-  config="$(dc exec singbox-warp cat /etc/sing-box/config.json 2>/dev/null || true)"
-  [[ -n "$config" ]] || { err "无法读取容器内配置"; return 1; }
-  hy2_password="$(printf '%s\n' "$config" | jq -r '.inbounds[]? | select(.type == "hysteria2") | .users[0].password // empty' | head -n1)"
-  hy2_port="$(printf '%s\n' "$config" | jq -r '.inbounds[]? | select(.type == "hysteria2") | .listen_port // empty' | head -n1)"
-  hy2_sni="$(printf '%s\n' "$config" | jq -r '.inbounds[]? | select(.type == "hysteria2") | .tls.server_name // empty' | head -n1)"
-  hy2_tag="$(printf '%s\n' "$config" | jq -r '.inbounds[]? | select(.type == "hysteria2") | .tag // empty' | head -n1)"
+  if ! docker ps --format '{{.Names}}' | grep -Fxq 'singbox-warp'; then
+    err "未找到 singbox-warp 容器"
+    exit 1
+  fi
+  if ! command -v qrencode >/dev/null 2>&1; then
+    if [[ "$(normalize_bool "$(ask_choice "未安装 qrencode，是否安装以显示二维码 (y/n)" "y")")" == "true" ]]; then
+      ensure_host_tools
+    fi
+  fi
+
+  local cfg
+  local hy2_password hy2_port hy2_sni hy2_tag hy2_insecure hy2_link
+  local vless_uuid vless_port vless_sni vless_tag vless_flow vless_link
+  local node_name
+  local has_any="false"
+  node_name="$(normalize_name "${NODE_NAME:-${TLS_DOMAIN:-node}}")"
+  cfg="$(docker exec singbox-warp sh -c 'cat /etc/sing-box/config.json' 2>/dev/null || true)"
+  if [[ -z "$cfg" ]]; then
+    err "无法读取容器内的 /etc/sing-box/config.json"
+    return 1
+  fi
+
+  hy2_password="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .users[0].password // empty' | head -n1)"
+  hy2_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .listen_port // empty' | head -n1)"
+  hy2_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .tls.server_name // empty' | head -n1)"
+  hy2_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | .tag // empty' | head -n1)"
+  hy2_insecure="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="hysteria2") | if .tls.insecure then 1 else 0 end' | head -n1)"
   if [[ -n "$hy2_password" && -n "$hy2_port" && -n "$hy2_sni" ]]; then
-    printf '%sHY2%s\n%s\n\n' "$C_BOLD" "$C_RESET" "hy2://${hy2_password}@${hy2_sni}:${hy2_port}?sni=${hy2_sni}&insecure=0#${hy2_tag:-hy2}"
+    hy2_tag="${hy2_tag:-hy2-${node_name}}"
+    hy2_link="hy2://${hy2_password}@${hy2_sni}:${hy2_port}?sni=${hy2_sni}&insecure=${hy2_insecure:-0}#${hy2_tag}"
+    printf '[node] %s\n' "$hy2_link"
+    if command -v qrencode >/dev/null 2>&1; then
+      qrencode -t ANSIUTF8 "$hy2_link"
+    fi
+    has_any="true"
   fi
-  vless_uuid="$(printf '%s\n' "$config" | jq -r '.inbounds[]? | select(.type == "vless") | .users[0].uuid // empty' | head -n1)"
-  vless_port="$(printf '%s\n' "$config" | jq -r '.inbounds[]? | select(.type == "vless") | .listen_port // empty' | head -n1)"
-  vless_sni="$(printf '%s\n' "$config" | jq -r '.inbounds[]? | select(.type == "vless") | .tls.server_name // empty' | head -n1)"
-  vless_tag="$(printf '%s\n' "$config" | jq -r '.inbounds[]? | select(.type == "vless") | .tag // empty' | head -n1)"
-  vless_flow="$(printf '%s\n' "$config" | jq -r '.inbounds[]? | select(.type == "vless") | .users[0].flow // empty' | head -n1)"
+
+  vless_uuid="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .users[0].uuid // empty' | head -n1)"
+  vless_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .listen_port // empty' | head -n1)"
+  vless_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tls.server_name // empty' | head -n1)"
+  vless_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tag // empty' | head -n1)"
+  vless_flow="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .users[0].flow // empty' | head -n1)"
   if [[ -n "$vless_uuid" && -n "$vless_port" && -n "$vless_sni" ]]; then
-    local vless_link="vless://${vless_uuid}@${vless_sni}:${vless_port}?encryption=none&security=tls&sni=${vless_sni}&type=tcp"
-    [[ -z "$vless_flow" ]] || vless_link+="&flow=${vless_flow}"
-    printf '%sVLESS%s\n%s#%s\n' "$C_BOLD" "$C_RESET" "$vless_link" "${vless_tag:-vless}"
+    vless_tag="${vless_tag:-vless-${node_name}}"
+    vless_link="vless://${vless_uuid}@${vless_sni}:${vless_port}?encryption=none&security=tls&sni=${vless_sni}&type=tcp"
+    if [[ -n "$vless_flow" ]]; then
+      vless_link="${vless_link}&flow=${vless_flow}"
+    fi
+    vless_link="${vless_link}#${vless_tag}"
+    printf '[node] %s\n' "$vless_link"
+    if command -v qrencode >/dev/null 2>&1; then
+      qrencode -t ANSIUTF8 "$vless_link"
+    fi
+    has_any="true"
   fi
+
+  if [[ "$has_any" == "true" ]]; then
+    command -v qrencode >/dev/null 2>&1 || diag_warn "未安装 qrencode，本次只显示节点链接"
+    return 0
+  fi
+  err "无法从运行配置解析节点链接；该操作不会自动修改或重启服务"
+  return 1
 }
 
-replace_compose_image() {
-  local image="$1"
-  awk -v replacement="$image" '
-    /^[[:space:]]*image:[[:space:]]*/ {
-      match($0, /^[[:space:]]*image:[[:space:]]*/)
-      print substr($0, 1, RLENGTH) replacement
-      next
-    }
-    { print }
-  ' "$COMPOSE_FILE" > "$COMPOSE_FILE.tmp"
-  mv "$COMPOSE_FILE.tmp" "$COMPOSE_FILE"
+apply_rollback_image() {
+  local rollback_image="$1"
+  [[ -f "$COMPOSE_FILE" ]] || { err "缺少 compose 文件: $COMPOSE_FILE"; exit 1; }
+  sed -i -E "s#^([[:space:]]*image:[[:space:]]*).+#\1${rollback_image}#" "$COMPOSE_FILE"
+  if ! docker image inspect "$rollback_image" >/dev/null 2>&1; then
+    docker pull "$rollback_image"
+  fi
+  (
+    cd "$APP_DIR"
+    docker compose up -d
+  )
+  wait_healthy || return 1
+  log "回滚完成: $rollback_image"
+}
+
+cmd_rollback() {
+  need_cmd docker
+  [[ -s "$ROLLBACK_FILE" ]] || {
+    err "未找到可回滚的镜像记录，请先执行一次 '更新镜像'"
+    return 1
+  }
+  apply_rollback_image "$(cat "$ROLLBACK_FILE")"
 }
 
 cmd_bootstrap() {
-  collect_bootstrap_inputs install || return
+  collect_bootstrap_inputs install
   validate_config
-  confirm_config || { log "已取消安装"; return; }
+  confirm_config || { log "已取消安装"; return 0; }
   ensure_docker
   ensure_host_tools
   prepare_auto_domain
-  NODE_NAME="$(resolve_node_name)"
+  finalize_node_name
+
   mkdir -p "$APP_DIR"/{data,certs,acme}
   write_compose
   write_env
-  log "正在拉取镜像，请稍候..."
-  dcc compose pull
-  log "正在启动服务..."
-  dcc compose up -d
-  wait_healthy 180 || { err "首次安装失败，请查看上方容器日志"; return 1; }
+
+  (
+    cd "$APP_DIR"
+    docker compose pull
+    docker compose up -d
+  )
+  wait_healthy || {
+    err "首次安装未通过健康检查，请根据上方日志修正配置后重试"
+    return 1
+  }
   persist_active_app_dir
-  ok "部署完成: $APP_DIR"
-  printf '\n'
-  cmd_show_nodes
+  log "初始化部署完成: $APP_DIR"
 }
 
 cmd_update_image() {
-  ensure_docker
+  need_cmd docker
+  [[ -f "$COMPOSE_FILE" && -f "$ENV_FILE" ]] || {
+    err "未找到现有部署，请先执行首次安装"
+    return 1
+  }
+  if [[ -s "$UPDATE_IMAGE_FILE" ]] && grep -Eq '^[[:space:]]*image:[[:space:]]*([^[:space:]]+@sha256:|sha256:)' "$COMPOSE_FILE"; then
+    sed -i -E "s#^([[:space:]]*image:[[:space:]]*).+#\1$(cat "$UPDATE_IMAGE_FILE")#" "$COMPOSE_FILE"
+  fi
   record_current_image_for_rollback
-  log "正在拉取最新镜像，请稍候..."
-  if ! dcc compose pull || ! dcc compose up -d; then
-    err "镜像更新失败"
+  if ! (
+    cd "$APP_DIR"
+    docker compose pull
+    docker compose up -d
+  ); then
+    err "镜像更新失败，正在恢复旧镜像"
+    apply_rollback_image "$(cat "$ROLLBACK_FILE")"
     return 1
   fi
-  wait_healthy || { err "新镜像健康检查失败"; return 1; }
-  ok "镜像更新完成，配置未改变"
+  if ! wait_healthy; then
+    err "新镜像健康检查失败，正在恢复旧镜像"
+    apply_rollback_image "$(cat "$ROLLBACK_FILE")"
+    return 1
+  fi
+  log "镜像更新完成，现有配置未改变"
 }
 
 cmd_edit_config() {
+  [[ -f "$ENV_FILE" && -f "$COMPOSE_FILE" ]] || {
+    err "未找到现有部署，请先执行首次安装"
+    return 1
+  }
   load_existing_env
   collect_bootstrap_inputs edit
   validate_config
-  confirm_config || { log "已取消修改"; return; }
+  confirm_config || { log "已取消修改"; return 0; }
   backup_config
   ensure_docker
   ensure_host_tools
   prepare_auto_domain
-  NODE_NAME="$(resolve_node_name)"
+  finalize_node_name
   write_compose
   write_env
-  log "正在应用新配置..."
-  if ! dcc compose up -d || ! wait_healthy; then
-    err "新配置未通过验证，正在恢复旧配置"
-    restore_config || err "旧配置恢复失败，请检查 $CONFIG_BACKUP_DIR"
+  if ! (
+    cd "$APP_DIR"
+    docker compose up -d
+  ); then
+    err "应用新配置失败，正在恢复旧配置"
+    restore_config || true
     return 1
   fi
-  ok "配置修改完成"
-  printf '\n'
-  cmd_show_nodes
+  if ! wait_healthy; then
+    err "新配置健康检查失败，正在恢复旧配置"
+    restore_config || true
+    wait_healthy || true
+    return 1
+  fi
+  log "配置修改完成"
+}
+
+DIAG_FAILURES=0
+
+diag_ok() { printf '[OK]   %s\n' "$*"; }
+diag_warn() { printf '[WARN] %s\n' "$*"; }
+diag_fail() {
+  printf '[FAIL] %s\n' "$*"
+  DIAG_FAILURES=$((DIAG_FAILURES + 1))
 }
 
 cmd_diagnose() {
-  ensure_docker
-  load_existing_env
-  [[ -f "$COMPOSE_FILE" ]] && ok "Compose 文件存在" || { err "缺少 $COMPOSE_FILE"; return 1; }
-  if dcc compose config -q; then ok "Compose 配置有效"; else err "Compose 配置无效"; return 1; fi
-  if container_running; then ok "容器正在运行"; else err "容器未运行"; return 1; fi
-  if wait_healthy 1; then :; else warn "容器尚未健康"; fi
+  DIAG_FAILURES=0
+  printf '\n诊断检查（只读）\n'
+  printf '部署目录: %s\n\n' "$APP_DIR"
+
+  if [[ -f "$ENV_FILE" ]]; then diag_ok ".env 存在"; else diag_fail "缺少 $ENV_FILE"; fi
+  if [[ -f "$COMPOSE_FILE" ]]; then diag_ok "Compose 文件存在"; else diag_fail "缺少 $COMPOSE_FILE"; fi
+  command -v docker >/dev/null 2>&1 || {
+    diag_fail "Docker 未安装"
+    return 1
+  }
+
+  if [[ -f "$ENV_FILE" ]]; then
+    load_existing_env
+  fi
+  if [[ -f "$COMPOSE_FILE" ]] && (cd "$APP_DIR" && docker compose config -q >/dev/null 2>&1); then
+    diag_ok "Compose 配置有效"
+  else
+    diag_fail "Compose 配置无效"
+  fi
+
+  if docker inspect singbox-warp >/dev/null 2>&1; then
+    local running health
+    running="$(docker inspect singbox-warp --format '{{.State.Running}}')"
+    health="$(docker inspect singbox-warp --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}')"
+    if [[ "$running" == "true" ]]; then diag_ok "容器正在运行"; else diag_fail "容器未运行"; fi
+    if [[ "$health" == "healthy" ]]; then diag_ok "容器健康检查通过"; else diag_fail "容器健康状态: $health"; fi
+  else
+    diag_fail "未找到 singbox-warp 容器"
+  fi
+
   if [[ -n "$TLS_DOMAIN" ]]; then
-    if getent ahostsv4 "$TLS_DOMAIN" >/dev/null 2>&1; then ok "域名可解析: $TLS_DOMAIN"; else warn "无法确认域名解析: $TLS_DOMAIN"; fi
+    if command -v getent >/dev/null 2>&1 && getent ahostsv4 "$TLS_DOMAIN" >/dev/null 2>&1; then
+      diag_ok "域名可解析: $TLS_DOMAIN"
+    else
+      diag_warn "无法确认域名解析: $TLS_DOMAIN"
+    fi
+  else
+    diag_fail "TLS_DOMAIN 为空"
   fi
-  if curl -fsSL --max-time 10 --proxy "socks5h://127.0.0.1:$MIXED_PORT" https://api.ipify.org >/dev/null; then ok "Mixed/WARP 出口可用"; else warn "Mixed/WARP 出口不可用"; fi
-}
 
-cmd_logs() { dc logs --tail 100 -f singbox-warp || true; }
-
-cmd_restart() {
-  log "正在重启服务..."
-  dc restart singbox-warp >/dev/null
-  wait_healthy || return 1
-  ok "服务重启完成"
-}
-
-cmd_rollback() {
-  [[ -s "$ROLLBACK_FILE" ]] || { warn "没有可回滚的镜像记录"; return 1; }
-  local image
-  image="$(head -n1 "$ROLLBACK_FILE")"
-  log "正在回滚到: $image"
-  replace_compose_image "$image"
-  dcc compose up -d
-  wait_healthy || return 1
-  ok "回滚完成"
-}
-
-current_script_path() {
-  local script_path="${BASH_SOURCE[0]}"
-  if [[ "$script_path" != /* ]]; then
-    script_path="$PWD/$script_path"
+  if [[ -n "$CF_Token" ]] && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    if curl -fsSL --max-time 10 -H "Authorization: Bearer $CF_Token" \
+      https://api.cloudflare.com/client/v4/user/tokens/verify 2>/dev/null \
+      | jq -e '.success == true and .result.status == "active"' >/dev/null 2>&1; then
+      diag_ok "Cloudflare API Token 有效"
+    else
+      diag_fail "Cloudflare API Token 无效或网络不可达"
+    fi
+  else
+    diag_warn "未检查 Cloudflare Token（Token、curl 或 jq 缺失）"
   fi
-  printf '%s' "$script_path"
-}
 
-cmd_update_script() {
-  need_cmd curl
-  local script_path tmp_script new_version
-  script_path="$(current_script_path)"
-  tmp_script="$(mktemp /tmp/swd-update.XXXXXX)"
-  log "正在从 GitHub 拉取最新脚本..."
-  if ! curl -fsSL --max-time 30 "$SCRIPT_UPDATE_URL" -o "$tmp_script"; then
-    err "下载失败: $SCRIPT_UPDATE_URL"
-    rm -f "$tmp_script"
-    return 1
+  if docker exec singbox-warp test -s "$TLS_CERT_PATH" >/dev/null 2>&1; then
+    local cert_end
+    cert_end="$(docker exec singbox-warp openssl x509 -in "$TLS_CERT_PATH" -noout -enddate 2>/dev/null || true)"
+    if docker exec singbox-warp openssl x509 -in "$TLS_CERT_PATH" -checkend 2592000 -noout >/dev/null 2>&1; then
+      diag_ok "TLS 证书有效期超过 30 天 (${cert_end#notAfter=})"
+    else
+      diag_warn "TLS 证书将在 30 天内到期 (${cert_end#notAfter=})"
+    fi
+  else
+    diag_fail "容器内未找到 TLS 证书"
   fi
-  if ! bash -n "$tmp_script"; then
-    err "新脚本语法检查失败，已取消更新"
-    rm -f "$tmp_script"
-    return 1
+
+  if command -v curl >/dev/null 2>&1; then
+    local warp_ip
+    warp_ip="$(curl -fsSL --max-time 10 --proxy "socks5h://127.0.0.1:$MIXED_PORT" https://api.ipify.org 2>/dev/null || true)"
+    if [[ -n "$warp_ip" ]]; then diag_ok "Mixed/WARP 出口可用: $warp_ip"; else diag_warn "无法通过 Mixed 代理获取出口 IP"; fi
   fi
-  new_version="$(sed -n 's/^SCRIPT_VERSION="\(.*\)"/\1/p' "$tmp_script" | head -n1)"
-  if [[ -z "$new_version" ]]; then
-    err "新脚本缺少 SCRIPT_VERSION，已取消更新"
-    rm -f "$tmp_script"
-    return 1
-  fi
-  if [[ "$new_version" == "$SCRIPT_VERSION" ]]; then
-    ok "脚本已是最新版本: v$SCRIPT_VERSION"
-    rm -f "$tmp_script"
+
+  printf '\n'
+  if [[ "$DIAG_FAILURES" -eq 0 ]]; then
+    diag_ok "未发现阻断性问题"
     return 0
   fi
-  printf '当前版本: v%s\n新版本: v%s\n' "$SCRIPT_VERSION" "$new_version" >&2
-  [[ "$(normalize_bool "$(ask_choice "确认更新脚本 (y/n)" "y")")" == "true" ]] || { log "已取消更新"; rm -f "$tmp_script"; return 0; }
-  chmod 0755 "$tmp_script"
-  if [[ -w "$(dirname "$script_path")" && -w "$script_path" ]]; then
-    mv -f "$tmp_script" "$script_path"
-  else
-    run_root install -m 0755 "$tmp_script" "$script_path"
-    rm -f "$tmp_script"
+  printf '[FAIL] 发现 %s 个阻断性问题\n' "$DIAG_FAILURES"
+  return 1
+}
+
+disable_auto_update() {
+  if command -v systemctl >/dev/null 2>&1; then
+    run_root systemctl disable --now singbox-warp-update.timer >/dev/null 2>&1 || true
   fi
-  ok "脚本已更新到 v$new_version: $script_path"
-  warn "请重新运行脚本以使用新版本"
-  exit 0
+}
+
+cmd_auto_update_settings() {
+  command -v systemctl >/dev/null 2>&1 || { err "当前系统不支持 systemd"; return 1; }
+  printf '\n自动更新设置\n  1) 启用（每天检查）\n  2) 禁用\n  3) 查看状态\n'
+  local choice
+  choice="$(ask_input "请选择 [1-3]" "3")"
+  case "$choice" in
+    1)
+      cmd_update_script
+      cat <<'EOF' | run_root tee /etc/systemd/system/singbox-warp-update.service >/dev/null
+[Unit]
+Description=Update singbox-warp image with health-check rollback
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -n -E 0 /run/singbox-warp-update.lock /usr/local/bin/swd auto-update
+EOF
+      cat <<'EOF' | run_root tee /etc/systemd/system/singbox-warp-update.timer >/dev/null
+[Unit]
+Description=Daily singbox-warp update check
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+      run_root systemctl daemon-reload
+      run_root systemctl enable --now singbox-warp-update.timer
+      log "自动更新已启用；更新失败时会自动回滚镜像"
+      ;;
+    2)
+      disable_auto_update
+      log "自动更新已禁用"
+      ;;
+    3)
+      systemctl status singbox-warp-update.timer --no-pager || true
+      ;;
+    *)
+      err "无效选择: $choice"
+      return 1
+      ;;
+  esac
+}
+
+cmd_auto_update() {
+  cmd_update_script || err "管理脚本自动更新失败，继续检查镜像"
+  cmd_update_image
+}
+
+validate_uninstall_dir() {
+  [[ "$APP_DIR" == /* && -f "$ENV_FILE" && -f "$COMPOSE_FILE" ]] || return 1
+  [[ "$(readlink -f "$APP_DIR")" == "$APP_DIR" ]] || return 1
+  case "$APP_DIR" in
+    /|/bin|/boot|/dev|/etc|/home|/opt|/proc|/root|/run|/sbin|/sys|/tmp|/usr|/var) return 1 ;;
+  esac
 }
 
 cmd_uninstall() {
-  printf '\n%s卸载会停止并删除容器及网络，但默认保留 data、certs、acme 和配置文件。%s\n' "$C_YELLOW" "$C_RESET" >&2
-  [[ "$(normalize_bool "$(ask_choice "确认卸载服务 (y/n)" "n")")" == "true" ]] || { log "已取消卸载"; return; }
-  ensure_docker
-  log "正在停止并删除容器..."
-  dcc compose down --remove-orphans
-  if [[ "$(normalize_bool "$(ask_choice "同时删除 $APP_DIR 的全部数据（不可恢复）(y/n)" "n")")" == "true" ]]; then
-    run_root rm -rf "$APP_DIR"
-    ok "服务与全部数据已删除"
-  else
-    ok "服务已卸载，配置和数据仍保留在 $APP_DIR"
-  fi
+  need_cmd docker
+  printf '\n卸载服务\n  1) 删除容器，保留配置和数据\n  2) 完全卸载并删除部署目录\n  3) 取消\n'
+  local choice confirm final_backup
+  choice="$(ask_input "请选择 [1-3]" "3")"
+  case "$choice" in
+    1)
+      if [[ "$(normalize_bool "$(ask_choice "确认停止并删除容器 (y/n)" "n")")" != "true" ]]; then return 0; fi
+      disable_auto_update
+      (cd "$APP_DIR" && docker compose down)
+      log "容器已删除，配置和持久化数据保留在 $APP_DIR"
+      ;;
+    2)
+      validate_uninstall_dir || { err "拒绝删除不安全或无效的部署目录: $APP_DIR"; return 1; }
+      confirm="$(ask_input "此操作不可撤销，请输入 DELETE 确认" "")"
+      [[ "$confirm" == "DELETE" ]] || { log "已取消卸载"; return 0; }
+      need_cmd tar
+      final_backup="$(dirname "$APP_DIR")/singbox-warp-final-$(date +%Y%m%d-%H%M%S).tar.gz"
+      (cd "$APP_DIR" && docker compose stop) || true
+      if ! create_backup_archive "$final_backup"; then
+        (cd "$APP_DIR" && docker compose up -d) || true
+        err "最终备份失败，已中止卸载"
+        return 1
+      fi
+      disable_auto_update
+      (cd "$APP_DIR" && docker compose down) || true
+      run_root rm -rf -- "$APP_DIR"
+      if [[ -f "$ACTIVE_INSTANCE_FILE" ]] && [[ "$(head -n1 "$ACTIVE_INSTANCE_FILE")" == "$APP_DIR" ]]; then
+        run_root rm -f "$ACTIVE_INSTANCE_FILE"
+      fi
+      run_root rm -f /etc/systemd/system/singbox-warp-update.service /etc/systemd/system/singbox-warp-update.timer /usr/local/bin/swd
+      run_root systemctl daemon-reload >/dev/null 2>&1 || true
+      log "完全卸载完成；最终备份: $final_backup"
+      ;;
+    3) log "已取消卸载" ;;
+    *) err "无效选择: $choice"; return 1 ;;
+  esac
+}
+
+cmd_logs() {
+  need_cmd docker
+  docker logs --tail 100 -f singbox-warp || true
+}
+
+cmd_restart() {
+  need_cmd docker
+  docker restart singbox-warp >/dev/null
+  wait_healthy || return 1
+  log "服务重启完成"
 }
 
 main() {
   load_active_app_dir
   self_install_swd
-  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then usage; return; fi
-  [[ -z "${1:-}" ]] || { err "此脚本仅支持交互模式"; usage; exit 1; }
-  print_banner
+  if [[ "${1:-}" == "auto-update" ]]; then
+    cmd_auto_update
+    return 0
+  fi
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
+    usage
+    return 0
+  fi
+  if [[ -n "${1:-}" ]]; then
+    err "此脚本仅支持交互模式，请不要带参数直接运行"
+    usage
+    exit 1
+  fi
   while true; do
-    local deployed="false"
-    is_deployed && deployed="true"
-    case "$(ask_menu_choice "$deployed")" in
-      0) log "退出"; return ;;
+    action="$(ask_menu_choice)"
+    case "$action" in
       1) cmd_bootstrap || true ;;
       2) cmd_update_image || true ;;
-      3) cmd_edit_config || true ;;
-      4) cmd_show_nodes || true ;;
-      5) cmd_status || true ;;
-      6) cmd_diagnose || true ;;
-      7) cmd_logs ;;
-      8) cmd_restart || true ;;
-      9) cmd_rollback || true ;;
-      10) cmd_uninstall || true ;;
-      11) cmd_update_script || true ;;
+      3) cmd_update_script || true ;;
+      4) cmd_edit_config || true ;;
+      5) cmd_show_nodes || true ;;
+      6) cmd_status || true ;;
+      7) cmd_diagnose || true ;;
+      8) cmd_logs ;;
+      9) cmd_restart || true ;;
+      10) cmd_backup || true ;;
+      11) cmd_restore || true ;;
+      12) cmd_auto_update_settings || true ;;
+      13) cmd_rollback || true ;;
+      14) cmd_uninstall || true ;;
+      15) log "退出"; return 0 ;;
     esac
   done
 }
