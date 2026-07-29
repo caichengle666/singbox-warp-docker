@@ -31,6 +31,8 @@ jobs:
             sudo apt-get install -y shellcheck
           fi
           shellcheck -S warning -e SC2034 deploy.sh entrypoint.sh
+          output="$(printf '15\n' | FORCE_STDIN=1 bash deploy.sh)"
+          grep -Fq '[deploy] 退出' <<<"$output"
 
       - name: Validate Compose configuration
         run: docker compose --env-file .env.example config -q
