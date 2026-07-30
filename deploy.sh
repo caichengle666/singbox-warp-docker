@@ -68,11 +68,14 @@ self_install_swd() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
     return 0
   fi
-  local target="/usr/local/bin/swd"
+  local source_file="${BASH_SOURCE[0]:-}" target="/usr/local/bin/swd"
+  if [[ ! -f "$source_file" ]]; then
+    return 0
+  fi
   if [[ ! -w "/usr/local/bin" ]]; then
     return 0
   fi
-  cp -f "$0" "$target" 2>/dev/null || return 0
+  cp -f "$source_file" "$target" 2>/dev/null || return 0
   chmod +x "$target" 2>/dev/null || true
 }
 
