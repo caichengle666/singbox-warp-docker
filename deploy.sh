@@ -143,9 +143,8 @@ ensure_root() {
     err "sudo 授权失败"
     exit 1
   fi
+  # shellcheck disable=SC2093
   exec sudo -E bash "$source_file" "$@"
-  err "无法通过 sudo 重新运行脚本"
-  exit 1
 }
 
 load_active_app_dir() {
