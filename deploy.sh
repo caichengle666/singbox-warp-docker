@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_VERSION="2.0.0"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -76,9 +77,11 @@ self_install_swd() {
 }
 
 usage() {
+  printf 'singbox-warp manager v%s\n\n' "$SCRIPT_VERSION"
   cat <<'EOF'
 Usage:
   deploy.sh
+  deploy.sh --version
 
 Environment:
   APP_DIR         部署目录 (default: /opt/singbox-warp)
@@ -244,7 +247,7 @@ ask_secret() {
 ask_menu_choice() {
   local value=""
   while true; do
-    printf "\n请选择操作:\n" >&2
+    printf "\nsingbox-warp 管理器 v%s\n请选择操作:\n" "$SCRIPT_VERSION" >&2
     printf "  1) 首次安装\n" >&2
     printf "  2) 更新镜像\n" >&2
     printf "  3) 更新管理脚本\n" >&2
@@ -585,12 +588,12 @@ cmd_update_script() {
   fi
   if [[ -f "$target" ]] && cmp -s "$temp_file" "$target"; then
     rm -f "$temp_file"
-    log "管理脚本已是最新版本"
+    log "管理脚本已是最新版本: v$SCRIPT_VERSION"
     return 0
   fi
   run_root install -m 0755 "$temp_file" "$target"
   rm -f "$temp_file"
-  log "管理脚本已更新: $target（下次运行生效）"
+  log "管理脚本已更新: $target（下次运行可用 --version 查看版本）"
 }
 
 load_existing_env() {
@@ -1078,6 +1081,7 @@ cmd_status() {
     exit 1
   }
   printf '\n状态总览\n'
+  printf '  管理脚本: v%s\n' "$SCRIPT_VERSION"
   printf '  部署目录: %s\n' "$APP_DIR"
   printf '  域名: %s\n' "${TLS_DOMAIN:-未配置}"
   printf '  HY2: %s (端口 %s)\n' "$ENABLE_HY2" "$HY2_PORT"
@@ -1486,6 +1490,10 @@ main() {
   self_install_swd
   if [[ "${1:-}" == "auto-update" ]]; then
     cmd_auto_update
+    return 0
+  fi
+  if [[ "${1:-}" == "-v" || "${1:-}" == "--version" || "${1:-}" == "version" ]]; then
+    printf 'singbox-warp manager v%s\n' "$SCRIPT_VERSION"
     return 0
   fi
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
