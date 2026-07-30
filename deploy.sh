@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.0.1"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -123,6 +123,29 @@ run_root() {
     err "执行以下命令需要 root 权限: $*"
     exit 1
   fi
+}
+
+ensure_root() {
+  if is_root; then
+    return 0
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    err "此操作需要 root 权限，但系统未安装 sudo；请切换到 root 后重新运行"
+    exit 1
+  fi
+  local source_file="${BASH_SOURCE[0]:-}"
+  if [[ ! -f "$source_file" ]]; then
+    err "无法从管道自动提升权限；请先下载脚本再运行: curl -fsSL $DEPLOY_SCRIPT_URL -o deploy.sh && bash deploy.sh"
+    exit 1
+  fi
+  log "检测到当前用户不是 root，正在通过 sudo 请求权限"
+  if ! sudo -v; then
+    err "sudo 授权失败"
+    exit 1
+  fi
+  exec sudo -E bash "$source_file" "$@"
+  err "无法通过 sudo 重新运行脚本"
+  exit 1
 }
 
 load_active_app_dir() {
@@ -1489,12 +1512,6 @@ cmd_restart() {
 }
 
 main() {
-  load_active_app_dir
-  self_install_swd
-  if [[ "${1:-}" == "auto-update" ]]; then
-    cmd_auto_update
-    return 0
-  fi
   if [[ "${1:-}" == "-v" || "${1:-}" == "--version" || "${1:-}" == "version" ]]; then
     printf 'singbox-warp manager v%s\n' "$SCRIPT_VERSION"
     return 0
@@ -1503,10 +1520,17 @@ main() {
     usage
     return 0
   fi
-  if [[ -n "${1:-}" ]]; then
+  if [[ -n "${1:-}" && "${1:-}" != "auto-update" ]]; then
     err "此脚本仅支持交互模式，请不要带参数直接运行"
     usage
     exit 1
+  fi
+  ensure_root "$@"
+  load_active_app_dir
+  self_install_swd
+  if [[ "${1:-}" == "auto-update" ]]; then
+    cmd_auto_update
+    return 0
   fi
   while true; do
     action="$(ask_menu_choice)"

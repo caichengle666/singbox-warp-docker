@@ -31,7 +31,10 @@ jobs:
             sudo apt-get install -y shellcheck
           fi
           shellcheck -S warning -e SC2034 deploy.sh entrypoint.sh
+          version="$(bash deploy.sh --version)"
+          grep -Fq 'singbox-warp manager v2.0.1' <<<"$version"
           output="$(printf '15\n' | FORCE_STDIN=1 bash deploy.sh)"
+          grep -Fq '正在通过 sudo 请求权限' <<<"$output"
           grep -Fq '[deploy] 退出' <<<"$output"
 
       - name: Validate Compose configuration
