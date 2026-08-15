@@ -510,7 +510,7 @@ prepare_auto_domain() {
   need_cmd curl
   need_cmd jq
 
-  local ip cpu mem country zone_id
+  local ip cpu mem city ip_suffix zone_id
   ip="$(get_public_ip)"
   [[ -n "$ip" ]] || { err "无法检测到公网 IPv4"; exit 1; }
   cpu="$(detect_cpu_flavor)"
@@ -598,7 +598,7 @@ ensure_host_tools() {
 
 cmd_update_script() {
   need_cmd curl
-  local temp_file target
+  local temp_file target remote_version
   temp_file="$(mktemp)"
   target="/usr/local/bin/swd"
   if ! curl -fsSL "$DEPLOY_SCRIPT_URL" -o "$temp_file"; then
@@ -609,6 +609,12 @@ cmd_update_script() {
   if ! bash -n "$temp_file"; then
     rm -f "$temp_file"
     err "下载的管理脚本语法校验失败，未替换现有脚本"
+    return 1
+  fi
+  remote_version="$(sed -n 's/^SCRIPT_VERSION="\([^"]*\)"/\1/p' "$temp_file" | head -n1)"
+  if [[ -z "$remote_version" ]]; then
+    rm -f "$temp_file"
+    err "下载的管理脚本缺少有效 SCRIPT_VERSION，未替换现有脚本"
     return 1
   fi
   if [[ -f "$target" ]] && cmp -s "$temp_file" "$target"; then
@@ -1066,36 +1072,6 @@ wait_healthy() {
   docker ps --format '{{.Names}} {{.Status}} {{.Image}}' | grep '^singbox-warp ' || true
   docker logs --tail 80 singbox-warp || true
   return 1
-}
-
-cmd_init() {
-  need_cmd docker
-  mkdir -p "$APP_DIR"/{data,certs,acme}
-  write_compose
-  write_env
-  log "初始化完成: $APP_DIR"
-  log "下一步: 编辑 $ENV_FILE，然后运行: $0 deploy"
-}
-
-cmd_deploy() {
-  need_cmd docker
-  [[ -f "$COMPOSE_FILE" ]] || { err "缺少 compose 文件: $COMPOSE_FILE"; exit 1; }
-  [[ -f "$ENV_FILE" ]] || { err "缺少环境变量文件: $ENV_FILE"; exit 1; }
-
-  load_existing_env
-  validate_config
-  prepare_auto_domain
-  finalize_node_name
-  write_env
-  record_current_image_for_rollback
-
-  (
-    cd "$APP_DIR"
-    docker compose pull
-    docker compose up -d
-  )
-  wait_healthy || return 1
-  log "部署完成"
 }
 
 cmd_status() {

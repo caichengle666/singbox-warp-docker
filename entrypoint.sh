@@ -186,6 +186,10 @@ start_singbox() {
 }
 
 validate_required_config() {
+  if [ "$AUTO_TLS_ENV" != "true" ] && [ "$AUTO_TLS_ENV" != "false" ]; then
+    echo "[config] AUTO_TLS must be true or false, got: $AUTO_TLS_ENV"
+    exit 1
+  fi
   if [ "$ENABLE_HY2_ENV" != "true" ] && [ "$ENABLE_HY2_ENV" != "false" ]; then
     echo "[config] ENABLE_HY2 must be true or false, got: $ENABLE_HY2_ENV"
     exit 1
@@ -230,6 +234,10 @@ validate_required_config() {
   fi
 
   if [ "$AUTO_TLS_ENV" != "true" ]; then
+    if [ -z "$TLS_DOMAIN_ENV" ]; then
+      echo "[config] TLS_DOMAIN is required for manual TLS"
+      exit 1
+    fi
     if [ ! -s "$TLS_CERT_PATH_ENV" ]; then
       echo "[config] manual TLS cert file missing: $TLS_CERT_PATH_ENV"
       exit 1

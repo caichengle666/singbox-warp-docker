@@ -15,13 +15,19 @@
 3. 运行：
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 4. 查看日志和节点链接：
 
 ```bash
 docker compose logs -f
+```
+
+上面的命令使用已发布镜像。若要从源码构建，版本参数留空会自动获取最新发布版；也可以显式传入版本后，将 `docker-compose.yml` 中的 `image` 改为该镜像：
+
+```bash
+docker build --build-arg SINGBOX_VERSION= --build-arg WGCF_VERSION= --build-arg ACME_SH_VERSION= -t singbox-warp-docker:local .
 ```
 
 ## 交互脚本
@@ -44,7 +50,7 @@ swd
 
 以下内容必须由你自己填写，否则容器无法正常对外提供服务：
 
-- 建议填写 `.env` 中的 `TLS_DOMAIN`，用于自动 TLS 和节点链接生成
+- `.env` 中的 `TLS_DOMAIN` 必须填写，用于 TLS 和节点链接生成
 
 启动脚本会自动把 `TLS_DOMAIN` 注入到两个入站的 `tls.server_name`，因此通常不需要再手改模板里的域名。
 
@@ -131,10 +137,6 @@ HY2_PASSWORD=
 # 可留空：如果填写，则覆盖 VLESS UUID；不填则跟 AUTH_UUID 一致
 VLESS_UUID=
 
-# 不建议改：镜像构建参数，除非你明确要固定旧版本
-SINGBOX_VERSION=1.11.8
-WGCF_VERSION=2.2.26
-
 # 必须确认：手动证书模式这里应为 false
 AUTO_TLS=false
 
@@ -184,10 +186,6 @@ AUTH_UUID=53fbb4a6-b0a1-4b0b-ae60-0b844c76580e
 # 可留空
 HY2_PASSWORD=
 VLESS_UUID=
-
-# 不建议改：镜像构建参数，除非你明确要固定旧版本
-SINGBOX_VERSION=1.11.8
-WGCF_VERSION=2.2.26
 
 # 必须改：自动 TLS 模式这里应为 true
 AUTO_TLS=true

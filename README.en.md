@@ -15,7 +15,7 @@ A Docker-based `sing-box` image template with:
 3. Run:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 4. Check logs and generated node links:
@@ -24,11 +24,17 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
+The command above uses the published image. To build from source, leave the version arguments empty to fetch the latest releases, or provide explicit versions, then replace `image` in `docker-compose.yml` with the local image:
+
+```bash
+docker build --build-arg SINGBOX_VERSION= --build-arg WGCF_VERSION= --build-arg ACME_SH_VERSION= -t singbox-warp-docker:local .
+```
+
 ## Required Values
 
 You must provide these values yourself, otherwise the container will not serve traffic correctly:
 
-- It is recommended to set `.env` `TLS_DOMAIN` for automatic TLS and node link generation
+- `.env` `TLS_DOMAIN` is required for TLS and node link generation
 
 The startup script injects `TLS_DOMAIN` into both inbound `tls.server_name` fields, so you usually do not need to edit the domain inside the template manually.
 
@@ -115,10 +121,6 @@ HY2_PASSWORD=
 # Optional: overrides only VLESS UUID; if empty, falls back to AUTH_UUID
 VLESS_UUID=
 
-# Optional: leave empty to auto-fetch latest at build time; set to pin a specific version
-SINGBOX_VERSION=
-WGCF_VERSION=
-
 # Must confirm: manual certificate mode should use false
 AUTO_TLS=false
 
@@ -168,10 +170,6 @@ AUTH_UUID=53fbb4a6-b0a1-4b0b-ae60-0b844c76580e
 # Optional
 HY2_PASSWORD=
 VLESS_UUID=
-
-# Optional: leave empty to auto-fetch latest at build time; set to pin a specific version
-SINGBOX_VERSION=
-WGCF_VERSION=
 
 # Must change: automatic TLS mode should use true
 AUTO_TLS=true

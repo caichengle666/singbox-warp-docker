@@ -5,16 +5,19 @@ services:
     # image: ghcr.io/caichengle666/singbox-warp-docker@sha256:<digest>
     image: ghcr.io/caichengle666/singbox-warp-docker:latest
 
-    # 如需本地源码构建，请删除上面的 image，改回下面这段 build 配置：
+    # 如需本地源码构建，请将上面的 image 替换为下面这段 build 配置；版本留空时自动获取最新发布版：
     # build:
     #   context: .
     #   dockerfile: Dockerfile
     #   args:
-    #     SINGBOX_VERSION: ""  # 留空自动获取最新版本
-    #     WGCF_VERSION: ""    # 留空自动获取最新版本
+    #     SINGBOX_VERSION: ""
+    #     WGCF_VERSION: ""
+    #     ACME_SH_VERSION: ""
     container_name: singbox-warp
     restart: unless-stopped
     ports:
+      # 注意：Compose 不会根据 ENABLE_HY2/ENABLE_VLESS 自动删除端口映射；
+      # 关闭协议时请手动移除对应端口，交互脚本生成的 Compose 会自动处理。
       # HY2 需要同时开放 TCP + UDP
       - "${HY2_PORT:-32443}:${HY2_PORT:-32443}/tcp"
       - "${HY2_PORT:-32443}:${HY2_PORT:-32443}/udp"
@@ -59,7 +62,7 @@ services:
       # AUTO_TLS=true  -> 使用 Cloudflare DNS API 自动签发证书
       # [必填] AUTO_TLS（必须明确 true/false）
       - AUTO_TLS=${AUTO_TLS:-false}
-      # [必填] TLS_DOMAIN（两种 TLS 模式都建议填写，节点链接依赖该域名）
+      # [必填] TLS_DOMAIN（两种 TLS 模式都必须填写，节点链接依赖该域名）
       - TLS_DOMAIN=${TLS_DOMAIN:-}
       - TLS_CERT_PATH=${TLS_CERT_PATH:-/etc/sing-box/certs/fullchain.pem}
       - TLS_KEY_PATH=${TLS_KEY_PATH:-/etc/sing-box/certs/privkey.pem}
