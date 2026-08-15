@@ -176,7 +176,7 @@ jobs:
           owner="${{ github.repository_owner }}"
           repo="${GITHUB_REPOSITORY#*/}"
           package_name="singbox-warp-docker"
-          owner_type="$(gh api "/repos/${owner}/${repo}" --jq -r '.owner.type')"
+          owner_type="$(gh api "/repos/${owner}/${repo}" --jq '.owner.type')"
           case "$owner_type" in
             User) owner_scope="users/${owner}" ;;
             Organization) owner_scope="orgs/${owner}" ;;
