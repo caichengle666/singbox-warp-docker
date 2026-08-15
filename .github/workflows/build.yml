@@ -182,9 +182,26 @@ jobs:
             Organization) owner_scope="orgs/${owner}" ;;
             *) echo "Unsupported package owner type: $owner_type" >&2; exit 1 ;;
           esac
-          versions="$(gh api --paginate "/${owner_scope}/packages/container/${package_name}/versions" --jq 'sort_by(.created_at) | reverse | .[] | [.id, .created_at, (.metadata.container.tags // [] | join(","))] | @tsv')"
+          versions_file="$(mktemp)"
+          trap 'rm -f "$versions_file"' EXIT
+          gh api --paginate --slurp "/${owner_scope}/packages/container/${package_name}/versions" > "$versions_file"
+          protected_tags=(
+            latest
+            "sb-${{ steps.versions.outputs.singbox }}"
+            "wgcf-${{ steps.versions.outputs.wgcf }}"
+            "sha-${GITHUB_SHA:0:7}"
+          )
+          versions="$(jq -r --arg sb "${protected_tags[1]}" --arg wgcf "${protected_tags[2]}" --arg sha "${protected_tags[3]}" '
+            map(.[]) |
+            sort_by(.created_at) |
+            reverse |
+            .[] |
+            select(((.metadata.container.tags // []) | any(. == "latest" or . == $sb or . == $wgcf or . == $sha)) | not) |
+            [.id, .created_at, (.metadata.container.tags // [] | join(","))] |
+            @tsv
+          ' "$versions_file")"
           count="$(printf '%s\n' "$versions" | sed '/^$/d' | wc -l)"
-          echo "Found $count GHCR versions"
+          echo "Found $count old GHCR versions to evaluate"
           for version_id in $(printf '%s\n' "$versions" | sed '/^$/d' | tail -n +4 | cut -f1); do
             echo "Deleting GHCR version id=${version_id}"
             gh api -X DELETE "/${owner_scope}/packages/container/${package_name}/versions/${version_id}"
