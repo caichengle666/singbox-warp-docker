@@ -9,7 +9,6 @@ on:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/singbox-warp-docker
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   build:
@@ -20,7 +19,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Validate shell scripts
         run: |
@@ -43,7 +42,7 @@ jobs:
       - name: Detect code changes
         id: changes
         if: github.event_name == 'push'
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             code:
@@ -87,7 +86,7 @@ jobs:
           echo "wgcf=$WGCF_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -133,16 +132,16 @@ jobs:
 
       - name: Set up QEMU
         if: steps.gate.outputs.should_build == 'true'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         if: steps.gate.outputs.should_build == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Docker metadata
         if: steps.gate.outputs.should_build == 'true'
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
@@ -153,7 +152,7 @@ jobs:
 
       - name: Build and push
         if: steps.gate.outputs.should_build == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
@@ -170,16 +169,30 @@ jobs:
 
       - name: Cleanup old GHCR versions (keep latest 3)
         if: steps.gate.outputs.should_build == 'true'
-        uses: actions/delete-package-versions@v5
-        with:
-          package-name: singbox-warp-docker
-          package-type: container
-          min-versions-to-keep: 3
-          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          owner="${{ github.repository_owner }}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          package_name="singbox-warp-docker"
+          owner_type="$(gh api "/repos/${owner}/${repo}" --jq -r '.owner.type')"
+          case "$owner_type" in
+            User) owner_scope="users/${owner}" ;;
+            Organization) owner_scope="orgs/${owner}" ;;
+            *) echo "Unsupported package owner type: $owner_type" >&2; exit 1 ;;
+          esac
+          versions="$(gh api --paginate "/${owner_scope}/packages/container/${package_name}/versions" --jq 'sort_by(.created_at) | reverse | .[] | [.id, .created_at, (.metadata.container.tags // [] | join(","))] | @tsv')"
+          count="$(printf '%s\n' "$versions" | sed '/^$/d' | wc -l)"
+          echo "Found $count GHCR versions"
+          for version_id in $(printf '%s\n' "$versions" | sed '/^$/d' | tail -n +4 | cut -f1); do
+            echo "Deleting GHCR version id=${version_id}"
+            gh api -X DELETE "/${owner_scope}/packages/container/${package_name}/versions/${version_id}"
+          done
 
       - name: Cleanup GitHub Actions caches
         if: always()
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
