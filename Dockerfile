@@ -34,7 +34,7 @@ RUN set -eux; \
     chmod +x /usr/local/bin/sing-box; \
     curl -fsSL "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_linux_${wgcf_arch}" -o /usr/local/bin/wgcf; \
     chmod +x /usr/local/bin/wgcf; \
-    curl -fsSL "https://raw.githubusercontent.com/acmesh-official/acme.sh/${ACME_SH_VERSION}/acme.sh" | sh -s email=none@example.com --force; \
+    curl -fsSL "https://raw.githubusercontent.com/acmesh-official/acme.sh/${ACME_SH_VERSION}/acme.sh" | sh -s --accountemail none@example.com --force; \
     rm -rf /tmp/*
 
 WORKDIR /app
