@@ -12,7 +12,6 @@ services:
     #   args:
     #     SINGBOX_VERSION: ""
     #     WGCF_VERSION: ""
-    #     ACME_SH_VERSION: ""
     container_name: singbox-warp
     restart: unless-stopped
     ports:

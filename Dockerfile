@@ -2,7 +2,6 @@ FROM debian:trixie-slim
 
 ARG SINGBOX_VERSION=""
 ARG WGCF_VERSION=""
-ARG ACME_SH_VERSION=""
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl tar bash jq tzdata openssl socat \
@@ -21,10 +20,7 @@ RUN set -eux; \
     if [ -z "$WGCF_VERSION" ]; then \
       WGCF_VERSION="$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -er '.tag_name' | sed 's/^v//')"; \
     fi; \
-    if [ -z "$ACME_SH_VERSION" ]; then \
-      ACME_SH_VERSION="$(curl -fsSL https://api.github.com/repos/acmesh-official/acme.sh/releases/latest | jq -er '.tag_name' | sed 's/^v//')"; \
-    fi; \
-    for version in "$SINGBOX_VERSION" "$WGCF_VERSION" "$ACME_SH_VERSION"; do \
+    for version in "$SINGBOX_VERSION" "$WGCF_VERSION"; do \
       printf '%s\n' "$version" | grep -Eq '^[0-9]+([.][0-9]+)+$' || { echo "Invalid release version: $version"; exit 1; }; \
     done; \
     echo "Building with sing-box v${SINGBOX_VERSION}, wgcf v${WGCF_VERSION}"; \
@@ -34,7 +30,7 @@ RUN set -eux; \
     chmod +x /usr/local/bin/sing-box; \
     curl -fsSL "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_linux_${wgcf_arch}" -o /usr/local/bin/wgcf; \
     chmod +x /usr/local/bin/wgcf; \
-    curl -fsSL "https://raw.githubusercontent.com/acmesh-official/acme.sh/${ACME_SH_VERSION}/acme.sh" | sh -s --accountemail none@example.com --force; \
+    curl -fsSL https://get.acme.sh | sh -s email=none@example.com --force; \
     rm -rf /tmp/*
 
 WORKDIR /app

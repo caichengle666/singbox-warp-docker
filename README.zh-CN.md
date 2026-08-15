@@ -27,7 +27,7 @@ docker compose logs -f
 上面的命令使用已发布镜像。若要从源码构建，版本参数留空会自动获取最新发布版；也可以显式传入版本后，将 `docker-compose.yml` 中的 `image` 改为该镜像：
 
 ```bash
-docker build --build-arg SINGBOX_VERSION= --build-arg WGCF_VERSION= --build-arg ACME_SH_VERSION= -t singbox-warp-docker:local .
+docker build --build-arg SINGBOX_VERSION= --build-arg WGCF_VERSION= -t singbox-warp-docker:local .
 ```
 
 ## 交互脚本

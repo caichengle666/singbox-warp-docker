@@ -27,7 +27,7 @@ docker compose logs -f
 The command above uses the published image. To build from source, leave the version arguments empty to fetch the latest releases, or provide explicit versions, then replace `image` in `docker-compose.yml` with the local image:
 
 ```bash
-docker build --build-arg SINGBOX_VERSION= --build-arg WGCF_VERSION= --build-arg ACME_SH_VERSION= -t singbox-warp-docker:local .
+docker build --build-arg SINGBOX_VERSION= --build-arg WGCF_VERSION= -t singbox-warp-docker:local .
 ```
 
 ## Required Values
