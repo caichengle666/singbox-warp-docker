@@ -31,6 +31,9 @@ TLS_CERT_PATH="${TLS_CERT_PATH:-/etc/sing-box/certs/fullchain.pem}"
 TLS_KEY_PATH="${TLS_KEY_PATH:-/etc/sing-box/certs/privkey.pem}"
 TLS_ISSUE_RETRIES="${TLS_ISSUE_RETRIES:-3}"
 TLS_RENEW_INTERVAL="${TLS_RENEW_INTERVAL:-43200}"
+CITY_LOOKUP_RETRIES="${CITY_LOOKUP_RETRIES:-3}"
+CITY_LOOKUP_TIMEOUT="${CITY_LOOKUP_TIMEOUT:-8}"
+CITY_LOOKUP_RETRY_DELAY="${CITY_LOOKUP_RETRY_DELAY:-1}"
 WARP_LICENSE_KEY="${WARP_LICENSE_KEY:-}"
 CF_Token="${CF_Token:-}"
 CF_Account_ID="${CF_Account_ID:-}"
@@ -426,40 +429,102 @@ detect_mem_label() {
 
 get_public_ip() {
   local ip
-  ip="$(curl -fsSL https://api.ipify.org 2>/dev/null || true)"
+  ip="$(curl -fsSL --connect-timeout 3 --max-time 8 --retry 2 --retry-delay 1 --retry-max-time 20 \
+    https://api.ipify.org 2>/dev/null | tr -d '\r\n' || true)"
   if [[ -z "$ip" ]]; then
-    ip="$(curl -fsSL https://ipv4.icanhazip.com 2>/dev/null | tr -d '\r\n' || true)"
+    ip="$(curl -fsSL --connect-timeout 3 --max-time 8 --retry 2 --retry-delay 1 --retry-max-time 20 \
+      https://ipv4.icanhazip.com 2>/dev/null | tr -d '\r\n' || true)"
   fi
-  printf '%s' "$ip"
+  if is_valid_ipv4 "$ip"; then
+    printf '%s' "$ip"
+    return 0
+  fi
+  return 1
+}
+
+is_valid_ipv4() {
+  local ip="$1" octet
+  local -a octets
+  IFS='.' read -r -a octets <<< "$ip"
+  [[ "${#octets[@]}" -eq 4 ]] || return 1
+  for octet in "${octets[@]}"; do
+    [[ "$octet" =~ ^[0-9]{1,3}$ ]] || return 1
+    ((10#$octet <= 255)) || return 1
+  done
+}
+
+normalize_city_value() {
+  local city
+  city="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '\r\n' \
+    | sed -E 's/[^a-z0-9]+//g')"
+  case "$city" in
+    ""|unknown|unavailable|ratelimitexceeded|error|null)
+      return 1
+      ;;
+  esac
+  printf '%s' "$city"
+}
+
+lookup_city_ipapi() {
+  local response
+  response="$(curl -fsSL --connect-timeout 3 --max-time "$CITY_LOOKUP_TIMEOUT" \
+    --retry 0 "https://ipapi.co/$1/city/" 2>/dev/null || true)"
+  normalize_city_value "$response"
+}
+
+lookup_city_ipwho() {
+  local response
+  command -v jq >/dev/null 2>&1 || return 1
+  response="$(curl -fsSL --connect-timeout 3 --max-time "$CITY_LOOKUP_TIMEOUT" \
+    --retry 0 "https://ipwho.is/$1" 2>/dev/null || true)"
+  normalize_city_value "$(printf '%s' "$response" | jq -er \
+    'select(.success != false) | .city // empty' 2>/dev/null || true)"
 }
 
 detect_city_code() {
   local ip="$1"
-  local city=""
-  city="$(curl -fsSL "https://ipapi.co/${ip}/city/" 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d '\r\n' | sed 's/ //g' || true)"
-  if [[ -z "$city" ]]; then
-    city="$(curl -fsSL "https://ipwho.is/${ip}" 2>/dev/null | jq -r '.city // empty' | tr '[:upper:]' '[:lower:]' | sed 's/ //g' || true)"
+  local city="" attempt
+  if ! is_valid_ipv4 "$ip"; then
+    return 1
   fi
+
+  for ((attempt=1; attempt<=CITY_LOOKUP_RETRIES; attempt++)); do
+    city="$(lookup_city_ipapi "$ip" 2>/dev/null || true)"
+    [[ -n "$city" ]] && break
+    city="$(lookup_city_ipwho "$ip" 2>/dev/null || true)"
+    [[ -n "$city" ]] && break
+    if ((attempt < CITY_LOOKUP_RETRIES)); then
+      sleep "$CITY_LOOKUP_RETRY_DELAY"
+    fi
+  done
+
+  if [[ -z "$city" ]]; then
+    return 1
+  fi
+
   local code=""
   case "$city" in
-    phoenix)            code="phx" ;;
-    sanjose|san*jose)   code="sjc" ;;
-    losangeles)         code="lax" ;;
-    newyork)            code="nyc" ;;
-    chicago)            code="chi" ;;
-    dallas)             code="dfw" ;;
-    seattle)            code="sea" ;;
-    miami)              code="mia" ;;
-    dubai)              code="dxb" ;;
-    tokyo)              code="tyo" ;;
-    osaka)              code="osa" ;;
-    seoul)              code="sel" ;;
-    chuncheon)          code="chc" ;;
-    singapore)          code="sin" ;;
-    london)             code="lon" ;;
-    frankfurt)          code="fra" ;;
-    *)                  code="${city:0:3}" ;;
+    phoenix)             code="phx" ;;
+    sanjose)             code="sjc" ;;
+    sanfrancisco)        code="sfo" ;;
+    losangeles)          code="lax" ;;
+    newyork|newyorkcity) code="nyc" ;;
+    lasvegas)            code="las" ;;
+    chicago)             code="chi" ;;
+    dallas)              code="dfw" ;;
+    seattle)             code="sea" ;;
+    miami)               code="mia" ;;
+    dubai)               code="dxb" ;;
+    tokyo)               code="tyo" ;;
+    osaka)               code="osa" ;;
+    seoul)               code="sel" ;;
+    chuncheon)           code="chc" ;;
+    singapore)           code="sin" ;;
+    london)              code="lon" ;;
+    frankfurt)           code="fra" ;;
+    *)                   code="${city:0:3}" ;;
   esac
+  [[ "$code" =~ ^[a-z][a-z0-9]{0,2}$ ]] || return 1
   printf '%s' "$code"
 }
 
@@ -515,7 +580,7 @@ prepare_auto_domain() {
   [[ -n "$ip" ]] || { err "无法检测到公网 IPv4"; exit 1; }
   cpu="$(detect_cpu_flavor)"
   mem="$(detect_mem_label)"
-  city="$(detect_city_code "$ip")"
+  city="$(detect_city_code "$ip" || printf 'x')"
   ip_suffix="${ip##*.}"
   TLS_DOMAIN="${cpu}${mem}-${ip_suffix}-${city}.${BASE_DOMAIN}"
 
@@ -747,6 +812,9 @@ validate_config() {
   validate_port "MIXED_PORT" "$MIXED_PORT"
   validate_positive_int "TLS_ISSUE_RETRIES" "$TLS_ISSUE_RETRIES"
   validate_positive_int "TLS_RENEW_INTERVAL" "$TLS_RENEW_INTERVAL"
+  validate_positive_int "CITY_LOOKUP_RETRIES" "$CITY_LOOKUP_RETRIES"
+  validate_positive_int "CITY_LOOKUP_TIMEOUT" "$CITY_LOOKUP_TIMEOUT"
+  validate_positive_int "CITY_LOOKUP_RETRY_DELAY" "$CITY_LOOKUP_RETRY_DELAY"
   validate_env_value "BASE_DOMAIN" "$BASE_DOMAIN"
   validate_env_value "TLS_DOMAIN" "$TLS_DOMAIN"
   validate_env_value "NODE_NAME" "$NODE_NAME"
