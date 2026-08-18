@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.0.4"
+SCRIPT_VERSION="2.0.5"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -533,10 +533,16 @@ detect_city_code() {
 resolve_zone_id() {
   local zone_name="$1"
   local token="$2"
-  local zid
-  zid="$(curl -fsSL -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
-    "https://api.cloudflare.com/client/v4/zones?name=$zone_name&status=active" \
-    | jq -r '.result[0].id // empty')"
+  local response zid
+  response="$(curl -fsSL --connect-timeout 5 --max-time 15 --get \
+    -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    --data-urlencode "name=$zone_name" --data-urlencode "status=active" \
+    "https://api.cloudflare.com/client/v4/zones")" || return 1
+  printf '%s' "$response" | jq -e '.success == true' >/dev/null || {
+    err "Cloudflare zone 查询失败: $zone_name"
+    return 1
+  }
+  zid="$(printf '%s' "$response" | jq -r '.result[0].id // empty')"
   printf '%s' "$zid"
 }
 
@@ -546,22 +552,42 @@ upsert_cloudflare_a_record() {
   local token="$3"
   local ip="$4"
   local proxied="${5:-false}"
-  local record_id
-  record_id="$(curl -fsSL -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
-    "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records?type=A&name=$fqdn" \
-    | jq -r '.result[0].id // empty')"
+  local record_response record_id body response
+  case "$proxied" in
+    true|false) ;;
+    *) err "无效的 Cloudflare proxied 值: $proxied"; return 1 ;;
+  esac
+  record_response="$(curl -fsSL --connect-timeout 5 --max-time 15 --get \
+    -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    --data-urlencode "type=A" --data-urlencode "name=$fqdn" \
+    "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records")" || return 1
+  printf '%s' "$record_response" | jq -e '.success == true' >/dev/null || {
+    err "查询 Cloudflare A 记录失败: $fqdn"
+    return 1
+  }
+  record_id="$(printf '%s' "$record_response" | jq -r '.result[0].id // empty')"
+  body="$(jq -nc --arg type A --arg name "$fqdn" --arg content "$ip" --argjson proxied "$proxied" \
+    '{type:$type,name:$name,content:$content,ttl:120,proxied:$proxied}')"
 
   if [[ -n "$record_id" ]]; then
-    curl -fsSL -X PUT -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
-      "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records/$record_id" \
-      --data "{\"type\":\"A\",\"name\":\"$fqdn\",\"content\":\"$ip\",\"ttl\":120,\"proxied\":$proxied}" \
-      | jq -e '.success == true' >/dev/null
+    response="$(curl -fsSL --connect-timeout 5 --max-time 15 -X PUT \
+      -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+      --data-binary "$body" \
+      "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records/$record_id")" || return 1
+    printf '%s' "$response" | jq -e '.success == true' >/dev/null || {
+      err "Cloudflare 更新 A 记录失败: $fqdn -> $ip"
+      return 1
+    }
     log "已更新 Cloudflare A 记录: $fqdn -> $ip"
   else
-    curl -fsSL -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
-      "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records" \
-      --data "{\"type\":\"A\",\"name\":\"$fqdn\",\"content\":\"$ip\",\"ttl\":120,\"proxied\":$proxied}" \
-      | jq -e '.success == true' >/dev/null
+    response="$(curl -fsSL --connect-timeout 5 --max-time 15 -X POST \
+      -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+      --data-binary "$body" \
+      "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records")" || return 1
+    printf '%s' "$response" | jq -e '.success == true' >/dev/null || {
+      err "Cloudflare 创建 A 记录失败: $fqdn -> $ip"
+      return 1
+    }
     log "已创建 Cloudflare A 记录: $fqdn -> $ip"
   fi
 }
@@ -1106,7 +1132,10 @@ cmd_restore() {
 
   pre_restore="$(mktemp --suffix=.tar.gz)"
   if [[ -f "$COMPOSE_FILE" ]]; then
-    (cd "$APP_DIR" && docker compose down)
+    if ! (cd "$APP_DIR" && docker compose down); then
+      err "停止现有容器失败，已中止恢复"
+      return 1
+    fi
   fi
   if ! create_backup_archive "$pre_restore"; then
     rm -f "$pre_restore"
@@ -1157,7 +1186,7 @@ cmd_status() {
   [[ -f "$ENV_FILE" ]] && load_existing_env
   docker ps --format '{{.Names}} {{.Status}} {{.Image}}' | grep '^singbox-warp ' || {
     err "singbox-warp 容器未运行"
-    exit 1
+    return 1
   }
   printf '\n状态总览\n'
   printf '  管理脚本: v%s\n' "$SCRIPT_VERSION"
@@ -1184,7 +1213,7 @@ cmd_show_nodes() {
   need_cmd jq
   if ! docker ps --format '{{.Names}}' | grep -Fxq 'singbox-warp'; then
     err "未找到 singbox-warp 容器"
-    exit 1
+    return 1
   fi
   if ! command -v qrencode >/dev/null 2>&1; then
     if [[ "$(normalize_bool "$(ask_choice "未安装 qrencode，是否安装以显示二维码 (y/n)" "y")")" == "true" ]]; then
@@ -1248,7 +1277,7 @@ cmd_show_nodes() {
 
 apply_rollback_image() {
   local rollback_image="$1"
-  [[ -f "$COMPOSE_FILE" ]] || { err "缺少 compose 文件: $COMPOSE_FILE"; exit 1; }
+  [[ -f "$COMPOSE_FILE" ]] || { err "缺少 compose 文件: $COMPOSE_FILE"; return 1; }
   sed -i -E "s#^([[:space:]]*image:[[:space:]]*).+#\1${rollback_image}#" "$COMPOSE_FILE"
   if ! docker image inspect "$rollback_image" >/dev/null 2>&1; then
     docker pull "$rollback_image"
@@ -1459,7 +1488,10 @@ cmd_auto_update_settings() {
   choice="$(ask_input "请选择 [1-3]" "3")"
   case "$choice" in
     1)
-      cmd_update_script
+      if ! cmd_update_script; then
+        err "管理脚本更新失败，已取消启用自动更新"
+        return 1
+      fi
       cat <<'EOF' | run_root tee /etc/systemd/system/singbox-warp-update.service >/dev/null
 [Unit]
 Description=Update singbox-warp image with health-check rollback
@@ -1560,7 +1592,10 @@ cmd_logs() {
 
 cmd_restart() {
   need_cmd docker
-  docker restart singbox-warp >/dev/null
+  if ! docker restart singbox-warp >/dev/null; then
+    err "重启 singbox-warp 容器失败"
+    return 1
+  fi
   wait_healthy || return 1
   log "服务重启完成"
 }
