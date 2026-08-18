@@ -74,10 +74,13 @@ renew_tls_cert_once() {
 
   if /root/.acme.sh/acme.sh --renew -d "$TLS_DOMAIN_ENV" --ecc --server letsencrypt; then
     echo "[tls] renewal check succeeded during $mode"
-    /root/.acme.sh/acme.sh --install-cert -d "$TLS_DOMAIN_ENV" --ecc \
+    if /root/.acme.sh/acme.sh --install-cert -d "$TLS_DOMAIN_ENV" --ecc \
       --fullchain-file "$TLS_CERT_PATH_ENV" \
-      --key-file "$TLS_KEY_PATH_ENV"
-    return 0
+      --key-file "$TLS_KEY_PATH_ENV"; then
+      return 0
+    fi
+    echo "[tls] install-cert failed during $mode"
+    return 1
   fi
 
   echo "[tls] renewal check did not update cert during $mode"

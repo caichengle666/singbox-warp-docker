@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.0.3"
+SCRIPT_VERSION="2.0.4"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -690,7 +690,11 @@ cmd_update_script() {
   if [[ "$remote_version" != "$SCRIPT_VERSION" ]]; then
     log "发现新版本: v$SCRIPT_VERSION -> v$remote_version"
   fi
-  run_root install -m 0755 "$temp_file" "$target"
+  if ! run_root install -m 0755 "$temp_file" "$target"; then
+    rm -f "$temp_file"
+    err "写入管理脚本失败: $target"
+    return 1
+  fi
   rm -f "$temp_file"
   log "管理脚本已更新: $target（下次运行可用 --version 查看版本）"
 }
@@ -1069,14 +1073,17 @@ cmd_backup() {
     was_running="true"
     docker stop singbox-warp >/dev/null
   fi
-  if ! create_backup_archive "$archive"; then
-    if [[ "$was_running" == "true" ]]; then
-      docker start singbox-warp >/dev/null || true
-    fi
+  local backup_ok="false"
+  if create_backup_archive "$archive"; then
+    backup_ok="true"
+  fi
+  if [[ "$was_running" == "true" ]]; then
+    docker start singbox-warp >/dev/null || err "重启容器失败，请手动检查"
+  fi
+  if [[ "$backup_ok" != "true" ]]; then
     return 1
   fi
   if [[ "$was_running" == "true" ]]; then
-    docker start singbox-warp >/dev/null
     wait_healthy || return 1
   fi
   log "备份完成: $archive"
@@ -1109,17 +1116,17 @@ cmd_restore() {
   fi
   if ! tar -xzf "$archive" -C "$APP_DIR"; then
     err "恢复归档失败，正在还原原配置"
-    tar -xzf "$pre_restore" -C "$APP_DIR"
+    tar -xzf "$pre_restore" -C "$APP_DIR" || true
     rm -f "$pre_restore"
-    (cd "$APP_DIR" && docker compose up -d)
+    (cd "$APP_DIR" && docker compose up -d) || true
     return 1
   fi
   chmod 600 "$ENV_FILE"
   if ! (cd "$APP_DIR" && docker compose up -d) || ! wait_healthy; then
     err "恢复后的服务不健康，正在回退"
     (cd "$APP_DIR" && docker compose down) || true
-    tar -xzf "$pre_restore" -C "$APP_DIR"
-    (cd "$APP_DIR" && docker compose up -d)
+    tar -xzf "$pre_restore" -C "$APP_DIR" || true
+    (cd "$APP_DIR" && docker compose up -d) || true
     wait_healthy || true
     rm -f "$pre_restore"
     return 1
@@ -1322,6 +1329,7 @@ cmd_edit_config() {
     return 1
   }
   load_existing_env
+  IMAGE="$(grep -E '^\s*image:\s*' "$COMPOSE_FILE" | head -n1 | sed -E 's/^\s*image:\s*//')"
   collect_bootstrap_inputs edit
   validate_config
   confirm_config || { log "已取消修改"; return 0; }
