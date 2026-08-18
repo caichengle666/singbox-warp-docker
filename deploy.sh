@@ -142,7 +142,7 @@ ensure_root() {
     exit 1
   fi
   log "检测到当前用户不是 root，正在通过 sudo 请求权限"
-  if ! sudo -v; then
+  if ! sudo -n -E true && ! sudo -v; then
     err "sudo 授权失败"
     exit 1
   fi
