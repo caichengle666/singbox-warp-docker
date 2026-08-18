@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.0.2"
+SCRIPT_VERSION="2.0.3"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -682,10 +682,13 @@ cmd_update_script() {
     err "下载的管理脚本缺少有效 SCRIPT_VERSION，未替换现有脚本"
     return 1
   fi
-  if [[ -f "$target" ]] && cmp -s "$temp_file" "$target"; then
+  if [[ -f "$target" ]] && [[ "$remote_version" == "$SCRIPT_VERSION" ]] && cmp -s "$temp_file" "$target"; then
     rm -f "$temp_file"
     log "管理脚本已是最新版本: v$SCRIPT_VERSION"
     return 0
+  fi
+  if [[ "$remote_version" != "$SCRIPT_VERSION" ]]; then
+    log "发现新版本: v$SCRIPT_VERSION -> v$remote_version"
   fi
   run_root install -m 0755 "$temp_file" "$target"
   rm -f "$temp_file"
