@@ -284,7 +284,7 @@ curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/m
 
 说明：
 
-- 当前管理脚本版本：`2.0.1`；运行 `swd --version` 可查看线上版本
+- 当前管理脚本版本：`2.0.2`；运行 `swd --version` 可查看线上版本
 - 普通用户运行时会自动请求 `sudo` 权限并以 root 重新启动；`--help` 和 `--version` 不需要提权
 - 脚本只提供交互模式（执行后逐项提示输入）
 - 菜单提供安装、镜像/管理脚本更新、配置修改、节点二维码、状态总览、诊断、日志、重启、备份恢复、自动更新、回滚和卸载
