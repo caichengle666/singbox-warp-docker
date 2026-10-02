@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.0.7"
+SCRIPT_VERSION="2.0.8"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -16,6 +16,7 @@ IMAGE="${IMAGE:-$IMAGE_DEFAULT}"
 HY2_PORT="${HY2_PORT:-32443}"
 HY2_PORT_HOPPING="${HY2_PORT_HOPPING:-false}"
 HY2_HOP_PORTS="${HY2_HOP_PORTS:-}"
+HY2_HOP_PORTS_LEGACY_ALLOWED="false"
 VLESS_PORT="${VLESS_PORT:-38443}"
 ANYTLS_PORT="${ANYTLS_PORT:-4443}"
 SS_PORT="${SS_PORT:-48443}"
@@ -771,6 +772,12 @@ load_existing_env() {
         ;;
     esac
   done < "$ENV_FILE"
+  if [[ "$HY2_HOP_PORTS" =~ ^([1-9][0-9]*)-([1-9][0-9]*)$ ]]; then
+    local hop_start=$((10#${BASH_REMATCH[1]})) hop_end=$((10#${BASH_REMATCH[2]}))
+    if (( hop_end >= hop_start && hop_end - hop_start + 1 > 50 )); then
+      HY2_HOP_PORTS_LEGACY_ALLOWED="true"
+    fi
+  fi
 }
 
 collect_bootstrap_inputs() {
@@ -902,7 +909,14 @@ validate_hy2_hop_ports() {
   validate_port "HY2_HOP_PORTS 起始端口" "$start"
   validate_port "HY2_HOP_PORTS 结束端口" "$end"
   (( start < end )) || { err "HY2_HOP_PORTS 起始端口必须小于结束端口"; exit 1; }
-  (( end - start + 1 <= 50 )) || { err "HY2_HOP_PORTS 最多允许 50 个端口"; exit 1; }
+  if (( end - start + 1 > 50 )); then
+    if [[ "$HY2_HOP_PORTS_LEGACY_ALLOWED" == "true" ]] && (( end - start + 1 <= 1024 )); then
+      log "检测到旧版 HY2 跳跃范围 $HY2_HOP_PORTS，保留兼容；新配置最多允许 50 个端口"
+    else
+      err "HY2_HOP_PORTS 最多允许 50 个端口"
+      exit 1
+    fi
+  fi
   local port
   for ((port=start; port<=end; port++)); do
     [[ "$port" != "$HY2_PORT" && "$port" != "$MIXED_PORT" ]] || {
