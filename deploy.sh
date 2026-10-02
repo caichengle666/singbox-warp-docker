@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.0.6"
+SCRIPT_VERSION="2.0.7"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -808,7 +808,7 @@ collect_bootstrap_inputs() {
     HY2_PORT="$(ask_input "HY2 端口" "$HY2_PORT")"
     HY2_PORT_HOPPING="$(normalize_bool "$(ask_choice "启用 HY2 端口跳跃 (y/n 或 true/false)" "${HY2_PORT_HOPPING}")")"
     if [[ "$HY2_PORT_HOPPING" == "true" ]]; then
-      HY2_HOP_PORTS="$(ask_input "HY2 跳跃端口范围 (例如 40000-40100)" "${HY2_HOP_PORTS:-40000-40100}")"
+      [[ -n "$HY2_HOP_PORTS" ]] || log "HY2 跳跃端口范围将自动选择（最多 50 个端口）"
     else
       HY2_HOP_PORTS=""
     fi
@@ -898,11 +898,11 @@ validate_hy2_hop_ports() {
     err "HY2_HOP_PORTS 必须是起始端口-结束端口，例如 40000-40100"
     exit 1
   }
-  local start="${BASH_REMATCH[1]}" end="${BASH_REMATCH[2]}"
+  local start=$((10#${BASH_REMATCH[1]})) end=$((10#${BASH_REMATCH[2]}))
   validate_port "HY2_HOP_PORTS 起始端口" "$start"
   validate_port "HY2_HOP_PORTS 结束端口" "$end"
   (( start < end )) || { err "HY2_HOP_PORTS 起始端口必须小于结束端口"; exit 1; }
-  (( end - start + 1 <= 1024 )) || { err "HY2_HOP_PORTS 最多允许 1024 个端口"; exit 1; }
+  (( end - start + 1 <= 50 )) || { err "HY2_HOP_PORTS 最多允许 50 个端口"; exit 1; }
   local port
   for ((port=start; port<=end; port++)); do
     [[ "$port" != "$HY2_PORT" && "$port" != "$MIXED_PORT" ]] || {
@@ -913,6 +913,58 @@ validate_hy2_hop_ports() {
     [[ "$ENABLE_ANYTLS" != "true" || "$port" != "$ANYTLS_PORT" ]] || { err "HY2 跳跃端口范围与 ANYTLS_PORT 冲突: $port"; exit 1; }
     [[ "$ENABLE_SS" != "true" || "$port" != "$SS_PORT" ]] || { err "HY2 跳跃端口范围与 SS_PORT 冲突: $port"; exit 1; }
   done
+}
+
+scan_host_ports() {
+  local -n used_ports_ref="$1"
+  local proc_file local_address port_hex port
+  used_ports_ref=()
+  for proc_file in /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6; do
+    [[ -r "$proc_file" ]] || continue
+    while read -r _ local_address _ _ _; do
+      port_hex="${local_address##*:}"
+      [[ "$port_hex" =~ ^[0-9A-Fa-f]{4}$ ]] || continue
+      port=$((16#$port_hex))
+      (( port > 0 )) && used_ports_ref[$port]=1
+    done < <(tail -n +2 "$proc_file")
+  done
+}
+
+select_hy2_hop_ports() {
+  [[ "$HY2_PORT_HOPPING" == "true" && -z "$HY2_HOP_PORTS" ]] || return 0
+  [[ "$ENABLE_HY2" == "true" ]] || { err "启用 HY2 端口跳跃前必须启用 HY2"; exit 1; }
+
+  local -A used_ports=()
+  scan_host_ports used_ports
+  used_ports[$HY2_PORT]=1
+  used_ports[$MIXED_PORT]=1
+  [[ "$ENABLE_VLESS" == "true" ]] && used_ports[$VLESS_PORT]=1
+  [[ "$ENABLE_ANYTLS" == "true" ]] && used_ports[$ANYTLS_PORT]=1
+  [[ "$ENABLE_SS" == "true" ]] && used_ports[$SS_PORT]=1
+
+  local min_port=20000 max_start=59951 start port attempt random_value
+  for ((attempt=1; attempt<=2000; attempt++)); do
+    random_value="$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' ')"
+    [[ "$random_value" =~ ^[0-9]+$ ]] || random_value="$RANDOM"
+    start=$((min_port + random_value % (max_start - min_port + 1)))
+    for ((port=start; port<start+50; port++)); do
+      [[ -z "${used_ports[$port]+x}" ]] || break
+    done
+    (( port == start + 50 )) || continue
+    HY2_HOP_PORTS="$start-$((start + 49))"
+    validate_hy2_hop_ports
+    local -A verify_ports=()
+    scan_host_ports verify_ports
+    for ((port=start; port<start+50; port++)); do
+      [[ -z "${verify_ports[$port]+x}" ]] || {
+        err "自动选择的 HY2 跳跃端口在落盘前被占用: $port"
+        exit 1
+      }
+    done
+    return 0
+  done
+  err "无法自动找到连续 50 个空闲的 HY2 跳跃端口，请释放端口后重试或手动设置 HY2_HOP_PORTS"
+  exit 1
 }
 
 validate_config() {
@@ -936,6 +988,7 @@ validate_config() {
     validate_port "SS_PORT" "$SS_PORT"
   fi
   validate_port "MIXED_PORT" "$MIXED_PORT"
+  select_hy2_hop_ports
   validate_hy2_hop_ports
   validate_positive_int "TLS_ISSUE_RETRIES" "$TLS_ISSUE_RETRIES"
   validate_positive_int "TLS_RENEW_INTERVAL" "$TLS_RENEW_INTERVAL"

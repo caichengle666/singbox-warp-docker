@@ -81,7 +81,7 @@ swd
 
 - `.env` `HY2_PORT`，默认 `32443`
 - `.env` `HY2_PORT_HOPPING`，默认 `false`；启用后由一键脚本映射 HY2 UDP 跳跃端口
-- `.env` `HY2_HOP_PORTS`，例如 `40000-40100`；最多 1024 个端口，不能与现有协议端口重叠
+- `.env` `HY2_HOP_PORTS`，留空时由一键脚本随机选择最多 50 个连续空闲端口；也可手动指定不超过 50 个端口的范围，但不能与现有协议端口重叠
 
 端口跳跃目前由 `deploy.sh` 生成逐端口 Docker UDP 映射；直接使用仓库根目录的静态 `docker-compose.yml` 时不会根据范围自动生成映射，避免 Compose 配置被隐式改写。
 - `.env` `VLESS_PORT`，默认 `38443`
@@ -298,7 +298,7 @@ curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/m
 
 说明：
 
-- 当前管理脚本版本：`2.0.6`；运行 `swd --version` 可查看线上版本
+- 当前管理脚本版本：`2.0.7`；运行 `swd --version` 可查看线上版本
 - 普通用户运行时会自动请求 `sudo` 权限并以 root 重新启动；`--help` 和 `--version` 不需要提权
 - 脚本只提供交互模式（执行后逐项提示输入）
 - 菜单提供安装、镜像/管理脚本更新、配置修改、节点二维码、状态总览、诊断、日志、重启、备份恢复、自动更新、回滚和卸载
@@ -453,4 +453,4 @@ chmod +x ./deploy.sh
 
 - 不要把私钥、证书、`.env` 直接提交进仓库
 - 使用自动 TLS 时，`CF_Token` 只给最小权限
-- 当前管理脚本版本：`2.0.6`；运行 `swd --version` 可查看线上版本
+- 当前管理脚本版本：`2.0.7`；运行 `swd --version` 可查看线上版本
