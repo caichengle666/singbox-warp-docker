@@ -467,9 +467,11 @@ normalize_city_value() {
 
 lookup_city_ipapi() {
   local response
+  command -v jq >/dev/null 2>&1 || return 1
   response="$(curl -fsSL --connect-timeout 3 --max-time "$CITY_LOOKUP_TIMEOUT" \
-    --retry 0 "https://ipapi.co/$1/city/" 2>/dev/null || true)"
-  normalize_city_value "$response"
+    --retry 0 "http://ip-api.com/json/$1?fields=status,city" 2>/dev/null || true)"
+  normalize_city_value "$(printf '%s' "$response" | jq -er \
+    'select(.status == "success") | .city // empty' 2>/dev/null || true)"
 }
 
 lookup_city_ipwho() {
@@ -479,6 +481,15 @@ lookup_city_ipwho() {
     --retry 0 "https://ipwho.is/$1" 2>/dev/null || true)"
   normalize_city_value "$(printf '%s' "$response" | jq -er \
     'select(.success != false) | .city // empty' 2>/dev/null || true)"
+}
+
+lookup_city_ipinfo() {
+  local response
+  command -v jq >/dev/null 2>&1 || return 1
+  response="$(curl -fsSL --connect-timeout 3 --max-time "$CITY_LOOKUP_TIMEOUT" \
+    --retry 0 "https://ipinfo.io/$1/json" 2>/dev/null || true)"
+  normalize_city_value "$(printf '%s' "$response" | jq -er \
+    '.city // empty' 2>/dev/null || true)"
 }
 
 detect_city_code() {
@@ -493,6 +504,8 @@ detect_city_code() {
     [[ -n "$city" ]] && break
     city="$(lookup_city_ipwho "$ip" 2>/dev/null || true)"
     [[ -n "$city" ]] && break
+    city="$(lookup_city_ipinfo "$ip" 2>/dev/null || true)"
+    [[ -n "$city" ]] && break
     if ((attempt < CITY_LOOKUP_RETRIES)); then
       sleep "$CITY_LOOKUP_RETRY_DELAY"
     fi
@@ -501,7 +514,6 @@ detect_city_code() {
   if [[ -z "$city" ]]; then
     return 1
   fi
-
   local code=""
   case "$city" in
     phoenix)             code="phx" ;;
