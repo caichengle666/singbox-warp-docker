@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.0.9"
+SCRIPT_VERSION="2.1.0"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -796,9 +796,10 @@ collect_bootstrap_inputs() {
   printf "需要 Cloudflare API Token（Zone / DNS / Edit 权限）。\n" >&2
   printf "申请地址: https://dash.cloudflare.com/profile/api-tokens\n" >&2
   AUTO_TLS="true"
-  CF_Token="$(ask_secret "Cloudflare API Token" "$CF_Token")"
+  printf "Cloudflare API Token 将明文显示，输入后请确认终端没有旁观者。\n" >&2
+  CF_Token="$(ask_input "Cloudflare API Token (可见输入)" "$CF_Token")"
   while [[ -z "$CF_Token" ]]; do
-    CF_Token="$(ask_secret "Cloudflare API Token" "$CF_Token")"
+    CF_Token="$(ask_input "Cloudflare API Token (可见输入)" "$CF_Token")"
     [[ -n "$CF_Token" ]] || err "Cloudflare API Token 不能为空"
   done
   AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
