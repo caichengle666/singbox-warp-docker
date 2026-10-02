@@ -51,6 +51,8 @@ services:
     environment:
       # 端口
       - HY2_PORT=${HY2_PORT:-32443}
+      - HY2_PORT_HOPPING=${HY2_PORT_HOPPING:-false}
+      - HY2_HOP_PORTS=${HY2_HOP_PORTS:-}
       - VLESS_PORT=${VLESS_PORT:-38443}
       - ANYTLS_PORT=${ANYTLS_PORT:-4443}
       - SS_PORT=${SS_PORT:-48443}

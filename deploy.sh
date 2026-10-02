@@ -14,6 +14,8 @@ APP_DIR_EXPLICIT="${APP_DIR+x}"
 APP_DIR="${APP_DIR:-$APP_DIR_DEFAULT}"
 IMAGE="${IMAGE:-$IMAGE_DEFAULT}"
 HY2_PORT="${HY2_PORT:-32443}"
+HY2_PORT_HOPPING="${HY2_PORT_HOPPING:-false}"
+HY2_HOP_PORTS="${HY2_HOP_PORTS:-}"
 VLESS_PORT="${VLESS_PORT:-38443}"
 ANYTLS_PORT="${ANYTLS_PORT:-4443}"
 SS_PORT="${SS_PORT:-48443}"
@@ -107,6 +109,8 @@ Environment:
   CF_Token        AUTO_TLS=true 时必填
 
   HY2_PORT        默认 32443
+  HY2_PORT_HOPPING true/false，默认 false
+  HY2_HOP_PORTS   端口跳跃范围，例如 40000-40100
   VLESS_PORT      默认 38443
   ANYTLS_PORT     默认 4443
   SS_PORT         默认 48443
@@ -762,7 +766,7 @@ load_existing_env() {
     key="${key%$'\r'}"
     value="${value%$'\r'}"
     case "$key" in
-      HY2_PORT|VLESS_PORT|ANYTLS_PORT|SS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|ENABLE_ANYTLS|ENABLE_SS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|ANYTLS_PASSWORD|SS_PASSWORD|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|CF_Token|CF_Account_ID|CF_Zone_ID)
+      HY2_PORT|HY2_PORT_HOPPING|HY2_HOP_PORTS|VLESS_PORT|ANYTLS_PORT|SS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|ENABLE_ANYTLS|ENABLE_SS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|ANYTLS_PASSWORD|SS_PASSWORD|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|CF_Token|CF_Account_ID|CF_Zone_ID)
         printf -v "$key" '%s' "$value"
         ;;
     esac
@@ -802,6 +806,12 @@ collect_bootstrap_inputs() {
   ENABLE_HY2="$(normalize_bool "$(ask_choice "启用 HY2 (y/n 或 true/false)" "${ENABLE_HY2}")")"
   if [[ "$ENABLE_HY2" == "true" ]]; then
     HY2_PORT="$(ask_input "HY2 端口" "$HY2_PORT")"
+    HY2_PORT_HOPPING="$(normalize_bool "$(ask_choice "启用 HY2 端口跳跃 (y/n 或 true/false)" "${HY2_PORT_HOPPING}")")"
+    if [[ "$HY2_PORT_HOPPING" == "true" ]]; then
+      HY2_HOP_PORTS="$(ask_input "HY2 跳跃端口范围 (例如 40000-40100)" "${HY2_HOP_PORTS:-40000-40100}")"
+    else
+      HY2_HOP_PORTS=""
+    fi
   fi
   ENABLE_VLESS="$(normalize_bool "$(ask_choice "启用 VLESS (y/n 或 true/false)" "${ENABLE_VLESS}")")"
   if [[ "$ENABLE_VLESS" == "true" ]]; then
@@ -836,6 +846,7 @@ confirm_config() {
   printf "  TLS 域名: %s\n" "$domain_label" >&2
   printf "  Cloudflare Token: 已配置（不会显示）\n" >&2
   printf "  HY2: %s (端口 %s)\n" "$ENABLE_HY2" "$HY2_PORT" >&2
+  printf "  HY2 端口跳跃: %s%s\n" "$HY2_PORT_HOPPING" "${HY2_HOP_PORTS:+ (范围 $HY2_HOP_PORTS)}" >&2
   printf "  VLESS: %s (端口 %s)\n" "$ENABLE_VLESS" "$VLESS_PORT" >&2
   printf "  AnyTLS: %s (端口 %s)\n" "$ENABLE_ANYTLS" "$ANYTLS_PORT" >&2
   printf "  Shadowsocks: %s (端口 %s)\n" "$ENABLE_SS" "$SS_PORT" >&2
@@ -880,11 +891,36 @@ validate_secret_value() {
   }
 }
 
+validate_hy2_hop_ports() {
+  [[ "$HY2_PORT_HOPPING" == "true" ]] || return 0
+  [[ "$ENABLE_HY2" == "true" ]] || { err "启用 HY2 端口跳跃前必须启用 HY2"; exit 1; }
+  [[ "$HY2_HOP_PORTS" =~ ^([1-9][0-9]*)-([1-9][0-9]*)$ ]] || {
+    err "HY2_HOP_PORTS 必须是起始端口-结束端口，例如 40000-40100"
+    exit 1
+  }
+  local start="${BASH_REMATCH[1]}" end="${BASH_REMATCH[2]}"
+  validate_port "HY2_HOP_PORTS 起始端口" "$start"
+  validate_port "HY2_HOP_PORTS 结束端口" "$end"
+  (( start < end )) || { err "HY2_HOP_PORTS 起始端口必须小于结束端口"; exit 1; }
+  (( end - start + 1 <= 1024 )) || { err "HY2_HOP_PORTS 最多允许 1024 个端口"; exit 1; }
+  local port
+  for ((port=start; port<=end; port++)); do
+    [[ "$port" != "$HY2_PORT" && "$port" != "$MIXED_PORT" ]] || {
+      err "HY2 跳跃端口范围不能包含 HY2_PORT 或 MIXED_PORT: $port"
+      exit 1
+    }
+    [[ "$ENABLE_VLESS" != "true" || "$port" != "$VLESS_PORT" ]] || { err "HY2 跳跃端口范围与 VLESS_PORT 冲突: $port"; exit 1; }
+    [[ "$ENABLE_ANYTLS" != "true" || "$port" != "$ANYTLS_PORT" ]] || { err "HY2 跳跃端口范围与 ANYTLS_PORT 冲突: $port"; exit 1; }
+    [[ "$ENABLE_SS" != "true" || "$port" != "$SS_PORT" ]] || { err "HY2 跳跃端口范围与 SS_PORT 冲突: $port"; exit 1; }
+  done
+}
+
 validate_config() {
   validate_true_false "ENABLE_HY2" "$ENABLE_HY2"
   validate_true_false "ENABLE_VLESS" "$ENABLE_VLESS"
   validate_true_false "ENABLE_ANYTLS" "$ENABLE_ANYTLS"
   validate_true_false "ENABLE_SS" "$ENABLE_SS"
+  validate_true_false "HY2_PORT_HOPPING" "$HY2_PORT_HOPPING"
   validate_true_false "AUTO_DOMAIN" "$AUTO_DOMAIN"
   validate_bool "$AUTO_TLS"
   if [[ "$ENABLE_HY2" == "true" ]]; then
@@ -900,6 +936,7 @@ validate_config() {
     validate_port "SS_PORT" "$SS_PORT"
   fi
   validate_port "MIXED_PORT" "$MIXED_PORT"
+  validate_hy2_hop_ports
   validate_positive_int "TLS_ISSUE_RETRIES" "$TLS_ISSUE_RETRIES"
   validate_positive_int "TLS_RENEW_INTERVAL" "$TLS_RENEW_INTERVAL"
   validate_positive_int "CITY_LOOKUP_RETRIES" "$CITY_LOOKUP_RETRIES"
@@ -975,6 +1012,13 @@ write_compose() {
     ports_block="${ports_block}
       - \"\${HY2_PORT:-32443}:\${HY2_PORT:-32443}/tcp\"
       - \"\${HY2_PORT:-32443}:\${HY2_PORT:-32443}/udp\""
+    if [[ "$HY2_PORT_HOPPING" == "true" ]]; then
+      local hop_start="${HY2_HOP_PORTS%-*}" hop_end="${HY2_HOP_PORTS#*-}" hop_port
+      for ((hop_port=hop_start; hop_port<=hop_end; hop_port++)); do
+        ports_block="${ports_block}
+      - \"${hop_port}:\${HY2_PORT:-32443}/udp\""
+      done
+    fi
   fi
   if [[ "$ENABLE_VLESS" == "true" ]]; then
     ports_block="${ports_block}
@@ -1022,6 +1066,8 @@ ${ports_block}
         max-file: "3"
     environment:
       - HY2_PORT=\${HY2_PORT:-32443}
+      - HY2_PORT_HOPPING=\${HY2_PORT_HOPPING:-false}
+      - HY2_HOP_PORTS=\${HY2_HOP_PORTS:-}
       - VLESS_PORT=\${VLESS_PORT:-38443}
       - ANYTLS_PORT=\${ANYTLS_PORT:-4443}
       - SS_PORT=\${SS_PORT:-48443}
@@ -1053,6 +1099,8 @@ EOF
 write_env() {
   cat >"$ENV_FILE" <<EOF
 HY2_PORT=$HY2_PORT
+HY2_PORT_HOPPING=$HY2_PORT_HOPPING
+HY2_HOP_PORTS=$HY2_HOP_PORTS
 VLESS_PORT=$VLESS_PORT
 ANYTLS_PORT=$ANYTLS_PORT
 SS_PORT=$SS_PORT
@@ -1332,6 +1380,9 @@ cmd_show_nodes() {
   if [[ -n "$hy2_password" && -n "$hy2_port" && -n "$hy2_sni" ]]; then
     hy2_tag="${hy2_tag:-hy2-${node_name}}"
     hy2_link="hy2://${hy2_password}@${hy2_sni}:${hy2_port}?sni=${hy2_sni}&insecure=${hy2_insecure:-0}#${hy2_tag}"
+    if [[ "$HY2_PORT_HOPPING" == "true" && -n "$HY2_HOP_PORTS" ]]; then
+      hy2_link="hy2://${hy2_password}@${hy2_sni}:${hy2_port}?sni=${hy2_sni}&mport=${HY2_HOP_PORTS}&insecure=${hy2_insecure:-0}#${hy2_tag}"
+    fi
     printf '[node] %s\n' "$hy2_link"
     if command -v qrencode >/dev/null 2>&1; then
       qrencode -t ANSIUTF8 "$hy2_link"

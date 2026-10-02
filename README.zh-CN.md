@@ -80,6 +80,10 @@ swd
 这些内容按需修改，不改也能启动：
 
 - `.env` `HY2_PORT`，默认 `32443`
+- `.env` `HY2_PORT_HOPPING`，默认 `false`；启用后由一键脚本映射 HY2 UDP 跳跃端口
+- `.env` `HY2_HOP_PORTS`，例如 `40000-40100`；最多 1024 个端口，不能与现有协议端口重叠
+
+端口跳跃目前由 `deploy.sh` 生成逐端口 Docker UDP 映射；直接使用仓库根目录的静态 `docker-compose.yml` 时不会根据范围自动生成映射，避免 Compose 配置被隐式改写。
 - `.env` `VLESS_PORT`，默认 `38443`
 - `.env` `ANYTLS_PORT`，默认 `4443`；启用 `ENABLE_ANYTLS=true` 后开放
 - `.env` `SS_PORT`，默认 `48443`；启用 `ENABLE_SS=true` 后开放
