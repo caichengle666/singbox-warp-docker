@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.0.8"
+SCRIPT_VERSION="2.0.9"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -284,6 +284,7 @@ ask_secret() {
   else
     read -r value || { err "未检测到交互终端"; exit 1; }
   fi
+  value="$(printf '%s' "$value" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
   printf '%s' "${value:-$current}"
 }
 
@@ -898,6 +899,15 @@ validate_secret_value() {
   }
 }
 
+validate_token_value() {
+  local name="$1"
+  local value="$2"
+  [[ "$value" =~ ^[A-Za-z0-9_./:@%+,=-]+$ ]] || {
+    err "$name 包含不支持的字符；请确认没有复制首尾空格或换行"
+    exit 1
+  }
+}
+
 validate_hy2_hop_ports() {
   [[ "$HY2_PORT_HOPPING" == "true" ]] || return 0
   [[ "$ENABLE_HY2" == "true" ]] || { err "启用 HY2 端口跳跃前必须启用 HY2"; exit 1; }
@@ -1022,7 +1032,7 @@ validate_config() {
   validate_secret_value "ANYTLS_PASSWORD" "$ANYTLS_PASSWORD"
   validate_secret_value "SS_PASSWORD" "$SS_PASSWORD"
   validate_env_value "WARP_LICENSE_KEY" "$WARP_LICENSE_KEY"
-  validate_env_value "CF_Token" "$CF_Token"
+  validate_token_value "CF_Token" "$CF_Token"
   validate_env_value "CF_Account_ID" "$CF_Account_ID"
   validate_env_value "CF_Zone_ID" "$CF_Zone_ID"
   if [[ "$ENABLE_HY2" != "true" && "$ENABLE_VLESS" != "true" &&
