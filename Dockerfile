@@ -43,6 +43,6 @@ RUN sed -i 's/\r$//' /entrypoint.sh \
 
 VOLUME ["/var/lib/wgcf", "/etc/sing-box/certs", "/var/lib/acme"]
 
-EXPOSE 32443/tcp 32443/udp 38443/tcp 1080/tcp
+EXPOSE 32443/tcp 32443/udp 38443/tcp 4443/tcp 48443/tcp 1080/tcp
 
 ENTRYPOINT ["/entrypoint.sh"]

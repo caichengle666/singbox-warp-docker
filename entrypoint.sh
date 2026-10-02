@@ -7,8 +7,12 @@ SB_CONFIG="/etc/sing-box/config.json"
 SINGBOX_PID_FILE="/run/sing-box.pid"
 HY2_PORT_ENV="${HY2_PORT:-32443}"
 VLESS_PORT_ENV="${VLESS_PORT:-38443}"
+ANYTLS_PORT_ENV="${ANYTLS_PORT:-4443}"
+SS_PORT_ENV="${SS_PORT:-48443}"
 ENABLE_HY2_ENV="${ENABLE_HY2:-true}"
 ENABLE_VLESS_ENV="${ENABLE_VLESS:-true}"
+ENABLE_ANYTLS_ENV="${ENABLE_ANYTLS:-false}"
+ENABLE_SS_ENV="${ENABLE_SS:-false}"
 MIXED_PORT_ENV="${MIXED_PORT:-1080}"
 AUTO_TLS_ENV="${AUTO_TLS:-false}"
 TLS_DOMAIN_ENV="${TLS_DOMAIN:-}"
@@ -21,6 +25,8 @@ WARP_LICENSE_KEY_ENV="${WARP_LICENSE_KEY:-}"
 AUTH_UUID_ENV="${AUTH_UUID:-}"
 HY2_PASSWORD_ENV="${HY2_PASSWORD:-}"
 VLESS_UUID_ENV="${VLESS_UUID:-}"
+ANYTLS_PASSWORD_ENV="${ANYTLS_PASSWORD:-}"
+SS_PASSWORD_ENV="${SS_PASSWORD:-}"
 NODE_NAME_ENV="${NODE_NAME:-}"
 SINGBOX_PID=""
 STOP_REQUESTED="false"
@@ -201,7 +207,16 @@ validate_required_config() {
     echo "[config] ENABLE_VLESS must be true or false, got: $ENABLE_VLESS_ENV"
     exit 1
   fi
-  if [ "$ENABLE_HY2_ENV" != "true" ] && [ "$ENABLE_VLESS_ENV" != "true" ]; then
+  if [ "$ENABLE_ANYTLS_ENV" != "true" ] && [ "$ENABLE_ANYTLS_ENV" != "false" ]; then
+    echo "[config] ENABLE_ANYTLS must be true or false, got: $ENABLE_ANYTLS_ENV"
+    exit 1
+  fi
+  if [ "$ENABLE_SS_ENV" != "true" ] && [ "$ENABLE_SS_ENV" != "false" ]; then
+    echo "[config] ENABLE_SS must be true or false, got: $ENABLE_SS_ENV"
+    exit 1
+  fi
+  if [ "$ENABLE_HY2_ENV" != "true" ] && [ "$ENABLE_VLESS_ENV" != "true" ] &&
+     [ "$ENABLE_ANYTLS_ENV" != "true" ] && [ "$ENABLE_SS_ENV" != "true" ]; then
     echo "[config] at least one inbound must be enabled"
     exit 1
   fi
@@ -213,12 +228,25 @@ validate_required_config() {
   if [ "$ENABLE_VLESS_ENV" = "true" ]; then
     validate_port "VLESS_PORT" "$VLESS_PORT_ENV"
   fi
+  if [ "$ENABLE_ANYTLS_ENV" = "true" ]; then
+    validate_port "ANYTLS_PORT" "$ANYTLS_PORT_ENV"
+  fi
+  if [ "$ENABLE_SS_ENV" = "true" ]; then
+    validate_port "SS_PORT" "$SS_PORT_ENV"
+  fi
   validate_port "MIXED_PORT" "$MIXED_PORT_ENV"
 
   if { [ "$ENABLE_HY2_ENV" = "true" ] && [ "$MIXED_PORT_ENV" = "$HY2_PORT_ENV" ]; } ||
      { [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$MIXED_PORT_ENV" = "$VLESS_PORT_ENV" ]; } ||
-     { [ "$ENABLE_HY2_ENV" = "true" ] && [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$HY2_PORT_ENV" = "$VLESS_PORT_ENV" ]; }; then
-    echo "[config] HY2, VLESS and mixed ports must be different"
+     { [ "$ENABLE_ANYTLS_ENV" = "true" ] && [ "$MIXED_PORT_ENV" = "$ANYTLS_PORT_ENV" ]; } ||
+     { [ "$ENABLE_SS_ENV" = "true" ] && [ "$MIXED_PORT_ENV" = "$SS_PORT_ENV" ]; } ||
+     { [ "$ENABLE_HY2_ENV" = "true" ] && [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$HY2_PORT_ENV" = "$VLESS_PORT_ENV" ]; } ||
+     { [ "$ENABLE_HY2_ENV" = "true" ] && [ "$ENABLE_ANYTLS_ENV" = "true" ] && [ "$HY2_PORT_ENV" = "$ANYTLS_PORT_ENV" ]; } ||
+     { [ "$ENABLE_HY2_ENV" = "true" ] && [ "$ENABLE_SS_ENV" = "true" ] && [ "$HY2_PORT_ENV" = "$SS_PORT_ENV" ]; } ||
+     { [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$ENABLE_ANYTLS_ENV" = "true" ] && [ "$VLESS_PORT_ENV" = "$ANYTLS_PORT_ENV" ]; } ||
+     { [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$ENABLE_SS_ENV" = "true" ] && [ "$VLESS_PORT_ENV" = "$SS_PORT_ENV" ]; } ||
+     { [ "$ENABLE_ANYTLS_ENV" = "true" ] && [ "$ENABLE_SS_ENV" = "true" ] && [ "$ANYTLS_PORT_ENV" = "$SS_PORT_ENV" ]; }; then
+    echo "[config] enabled inbound ports must be different"
     exit 1
   fi
 
@@ -308,6 +336,12 @@ fi
 if [ -z "$VLESS_UUID_ENV" ]; then
   VLESS_UUID_ENV="$AUTH_UUID_ENV"
 fi
+if [ -z "$ANYTLS_PASSWORD_ENV" ]; then
+  ANYTLS_PASSWORD_ENV="$AUTH_UUID_ENV"
+fi
+if [ -z "$SS_PASSWORD_ENV" ]; then
+  SS_PASSWORD_ENV="$(openssl rand -base64 32 | tr -d '\r\n')"
+fi
 
 NODE_NAME_EFFECTIVE="$NODE_NAME_ENV"
 if [ -z "$NODE_NAME_EFFECTIVE" ]; then
@@ -320,6 +354,8 @@ VLESS_TAG_ENV="vless-${NODE_NAME_EFFECTIVE}"
 sed -i \
   -e "s|__HY2_PORT__|$HY2_PORT_ENV|g" \
   -e "s|__VLESS_PORT__|$VLESS_PORT_ENV|g" \
+  -e "s|__ANYTLS_PORT__|$ANYTLS_PORT_ENV|g" \
+  -e "s|__SS_PORT__|$SS_PORT_ENV|g" \
   -e "s|__HY2_TAG__|$HY2_TAG_ENV|g" \
   -e "s|__VLESS_TAG__|$VLESS_TAG_ENV|g" \
   -e "s|__WARP_PEER_PORT__|$WARP_PEER_PORT|g" \
@@ -330,6 +366,8 @@ tmp_config="$(mktemp)"
 jq \
   --arg hy2Password "$HY2_PASSWORD_ENV" \
   --arg vlessUuid "$VLESS_UUID_ENV" \
+  --arg anytlsPassword "$ANYTLS_PASSWORD_ENV" \
+  --arg ssPassword "$SS_PASSWORD_ENV" \
   --arg tlsDomain "$TLS_DOMAIN_ENV" \
   --arg tlsCertPath "$TLS_CERT_PATH_ENV" \
   --arg tlsKeyPath "$TLS_KEY_PATH_ENV" \
@@ -341,21 +379,27 @@ jq \
   --arg warpReserved "$WARP_RESERVED" \
   --arg enableHy2 "$ENABLE_HY2_ENV" \
   --arg enableVless "$ENABLE_VLESS_ENV" \
+  --arg enableAnytls "$ENABLE_ANYTLS_ENV" \
+  --arg enableSs "$ENABLE_SS_ENV" \
   --arg hy2Tag "$HY2_TAG_ENV" \
   --arg vlessTag "$VLESS_TAG_ENV" \
   '
   (.inbounds[] | select(.type=="hysteria2") | .users[0].password) = $hy2Password |
   (.inbounds[] | select(.type=="vless") | .users[0].uuid) = $vlessUuid |
+  (.inbounds[] | select(.type=="anytls") | .users[0].password) = $anytlsPassword |
+  (.inbounds[] | select(.type=="shadowsocks") | .password) = $ssPassword |
   (.inbounds[] | select(.type=="hysteria2") | .tag) = $hy2Tag |
   (.inbounds[] | select(.type=="vless") | .tag) = $vlessTag |
-  (.inbounds[] | select(.type=="hysteria2" or .type=="vless") | .tls.server_name) = $tlsDomain |
-  (.inbounds[] | select(.type=="hysteria2" or .type=="vless") | .tls.certificate_path) = $tlsCertPath |
-  (.inbounds[] | select(.type=="hysteria2" or .type=="vless") | .tls.key_path) = $tlsKeyPath |
+  (.inbounds[] | select(.type=="hysteria2" or .type=="vless" or .type=="anytls") | .tls.server_name) = $tlsDomain |
+  (.inbounds[] | select(.type=="hysteria2" or .type=="vless" or .type=="anytls") | .tls.certificate_path) = $tlsCertPath |
+  (.inbounds[] | select(.type=="hysteria2" or .type=="vless" or .type=="anytls") | .tls.key_path) = $tlsKeyPath |
   .inbounds |= map(select(
     (.type=="hysteria2" and $enableHy2=="true") or
     (.type=="vless" and $enableVless=="true") or
+    (.type=="anytls" and $enableAnytls=="true") or
+    (.type=="shadowsocks" and $enableSs=="true") or
     (.type=="mixed") or
-    (.type!="hysteria2" and .type!="vless" and .type!="mixed")
+    (.type!="hysteria2" and .type!="vless" and .type!="anytls" and .type!="shadowsocks" and .type!="mixed")
   )) |
   (.endpoints[] | select(.tag=="warp") | .address) = [$warpAddressV4, $warpAddressV6] |
   (.endpoints[] | select(.tag=="warp") | .private_key) = $warpPrivateKey |

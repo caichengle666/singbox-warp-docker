@@ -4,6 +4,8 @@
 
 - `HY2` 入站
 - `VLESS` 入站
+- 可选 `AnyTLS` 入站
+- 可选 `Shadowsocks 2022` 入站
 - Cloudflare WARP 出站
 - 可选自动 TLS（Cloudflare DNS API）
 - GitHub Actions 多架构构建
@@ -52,7 +54,7 @@ swd
 
 - `.env` 中的 `TLS_DOMAIN` 必须填写，用于 TLS 和节点链接生成
 
-启动脚本会自动把 `TLS_DOMAIN` 注入到两个入站的 `tls.server_name`，因此通常不需要再手改模板里的域名。
+启动脚本会自动把 `TLS_DOMAIN` 注入到启用的 TLS 入站（HY2、VLESS、AnyTLS）的 `tls.server_name`，因此通常不需要再手改模板里的域名。
 
 自动 TLS 模式还必须填写：
 
@@ -79,10 +81,16 @@ swd
 
 - `.env` `HY2_PORT`，默认 `32443`
 - `.env` `VLESS_PORT`，默认 `38443`
+- `.env` `ANYTLS_PORT`，默认 `4443`；启用 `ENABLE_ANYTLS=true` 后开放
+- `.env` `SS_PORT`，默认 `48443`；启用 `ENABLE_SS=true` 后开放
 - `.env` `MIXED_PORT`，默认 `1080`（**本地 HTTP+SOCKS5 代理入口**，详见下节）
+- `.env` `ENABLE_ANYTLS`，默认 `false`
+- `.env` `ENABLE_SS`，默认 `false`
 - `.env` `AUTH_UUID`，统一设置 `hy2 password` 和 `vless uuid`
 - `.env` `HY2_PASSWORD`，单独覆盖 `hy2 password`
 - `.env` `VLESS_UUID`，单独覆盖 `vless uuid`
+- `.env` `ANYTLS_PASSWORD`，可选；留空时使用 `AUTH_UUID`
+- `.env` `SS_PASSWORD`，可选；留空时由一键安装脚本生成 Shadowsocks 2022 密钥
 - `.env` `ACME_EMAIL`
 - `.env` `TLS_CERT_PATH`，默认 `/etc/sing-box/certs/fullchain.pem`
 - `.env` `TLS_KEY_PATH`，默认 `/etc/sing-box/certs/privkey.pem`
@@ -230,6 +238,8 @@ CF_Zone_ID=
 - `config/sing-box.template.json` 中的 `__VLESS_PORT__`
 - `config/sing-box.template.json` 中的 `__HY2_PASSWORD__`
 - `config/sing-box.template.json` 中的 `__VLESS_UUID__`
+- `config/sing-box.template.json` 中的 `__ANYTLS_PASSWORD__`
+- `config/sing-box.template.json` 中的 `__SS_PASSWORD__`
 - `config/sing-box.template.json` 中的 `__TLS_DOMAIN__`
 - `config/sing-box.template.json` 中的 `__TLS_CERT_PATH__`
 - `config/sing-box.template.json` 中的 `__TLS_KEY_PATH__`

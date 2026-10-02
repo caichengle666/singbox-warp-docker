@@ -22,6 +22,10 @@ services:
       - "${HY2_PORT:-32443}:${HY2_PORT:-32443}/udp"
       # VLESS(TCP)
       - "${VLESS_PORT:-38443}:${VLESS_PORT:-38443}/tcp"
+      # AnyTLS(TCP)，默认关闭；启用后需同步设置 ENABLE_ANYTLS=true
+      - "${ANYTLS_PORT:-4443}:${ANYTLS_PORT:-4443}/tcp"
+      # Shadowsocks 2022(TCP)，默认关闭；启用后需同步设置 ENABLE_SS=true
+      - "${SS_PORT:-48443}:${SS_PORT:-48443}/tcp"
       # Mixed (HTTP + SOCKS5) 本地代理，仅开放给宿主机本地使用
       - "127.0.0.1:${MIXED_PORT:-1080}:${MIXED_PORT:-1080}/tcp"
     volumes:
@@ -48,13 +52,19 @@ services:
       # 端口
       - HY2_PORT=${HY2_PORT:-32443}
       - VLESS_PORT=${VLESS_PORT:-38443}
+      - ANYTLS_PORT=${ANYTLS_PORT:-4443}
+      - SS_PORT=${SS_PORT:-48443}
       - ENABLE_HY2=${ENABLE_HY2:-true}
       - ENABLE_VLESS=${ENABLE_VLESS:-true}
+      - ENABLE_ANYTLS=${ENABLE_ANYTLS:-false}
+      - ENABLE_SS=${ENABLE_SS:-false}
       - MIXED_PORT=${MIXED_PORT:-1080}
       # 认证信息：不填时会自动生成并在日志打印节点链接
       - AUTH_UUID=${AUTH_UUID:-}
       - HY2_PASSWORD=${HY2_PASSWORD:-}
       - VLESS_UUID=${VLESS_UUID:-}
+      - ANYTLS_PASSWORD=${ANYTLS_PASSWORD:-}
+      - SS_PASSWORD=${SS_PASSWORD:-}
 
       # TLS 模式：
       # AUTO_TLS=false -> 使用 ./certs 里的手动证书

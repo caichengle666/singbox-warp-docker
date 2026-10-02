@@ -39,6 +39,33 @@
       }
     },
     {
+      "type": "anytls",
+      "tag": "anytls-in",
+      "listen": "::",
+      "listen_port": __ANYTLS_PORT__,
+      "users": [
+        {
+          "name": "default",
+          "password": "__ANYTLS_PASSWORD__"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "__TLS_DOMAIN__",
+        "certificate_path": "__TLS_CERT_PATH__",
+        "key_path": "__TLS_KEY_PATH__"
+      }
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "ss-in",
+      "listen": "::",
+      "listen_port": __SS_PORT__,
+      "network": "tcp",
+      "method": "2022-blake3-aes-256-gcm",
+      "password": "__SS_PASSWORD__"
+    },
+    {
       "type": "mixed",
       "tag": "mixed-in",
       "listen": "0.0.0.0",

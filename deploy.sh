@@ -15,9 +15,13 @@ APP_DIR="${APP_DIR:-$APP_DIR_DEFAULT}"
 IMAGE="${IMAGE:-$IMAGE_DEFAULT}"
 HY2_PORT="${HY2_PORT:-32443}"
 VLESS_PORT="${VLESS_PORT:-38443}"
+ANYTLS_PORT="${ANYTLS_PORT:-4443}"
+SS_PORT="${SS_PORT:-48443}"
 MIXED_PORT="${MIXED_PORT:-1080}"
 ENABLE_HY2="${ENABLE_HY2:-true}"
 ENABLE_VLESS="${ENABLE_VLESS:-true}"
+ENABLE_ANYTLS="${ENABLE_ANYTLS:-false}"
+ENABLE_SS="${ENABLE_SS:-false}"
 AUTO_TLS="${AUTO_TLS:-false}"
 AUTO_DOMAIN="${AUTO_DOMAIN:-true}"
 BASE_DOMAIN="${BASE_DOMAIN:-}"
@@ -26,6 +30,8 @@ NODE_NAME="${NODE_NAME:-}"
 AUTH_UUID="${AUTH_UUID:-}"
 HY2_PASSWORD="${HY2_PASSWORD:-}"
 VLESS_UUID="${VLESS_UUID:-}"
+ANYTLS_PASSWORD="${ANYTLS_PASSWORD:-}"
+SS_PASSWORD="${SS_PASSWORD:-}"
 ACME_EMAIL="${ACME_EMAIL:-}"
 TLS_CERT_PATH="${TLS_CERT_PATH:-/etc/sing-box/certs/fullchain.pem}"
 TLS_KEY_PATH="${TLS_KEY_PATH:-/etc/sing-box/certs/privkey.pem}"
@@ -102,10 +108,14 @@ Environment:
 
   HY2_PORT        默认 32443
   VLESS_PORT      默认 38443
+  ANYTLS_PORT     默认 4443
+  SS_PORT         默认 48443
   MIXED_PORT      默认 1080，仅绑定宿主机 127.0.0.1，给本机 HTTP+SOCKS5 代理使用
   AUTH_UUID       可选，固定认证值
   HY2_PASSWORD    可选，覆盖 HY2 密码
   VLESS_UUID      可选，覆盖 VLESS UUID
+  ANYTLS_PASSWORD 可选，留空时使用 AUTH_UUID
+  SS_PASSWORD     可选，留空时自动生成 Shadowsocks 2022 密钥
 
   手动证书模式需要：
     APP_DIR/certs/fullchain.pem
@@ -388,6 +398,13 @@ resolve_auth_values() {
   fi
   if [[ -z "$VLESS_UUID" ]]; then
     VLESS_UUID="$AUTH_UUID"
+  fi
+  if [[ "$ENABLE_ANYTLS" == "true" && -z "$ANYTLS_PASSWORD" ]]; then
+    ANYTLS_PASSWORD="$AUTH_UUID"
+  fi
+  if [[ "$ENABLE_SS" == "true" && -z "$SS_PASSWORD" ]]; then
+    need_cmd openssl
+    SS_PASSWORD="$(openssl rand -base64 32 | tr -d '\r\n')"
   fi
 }
 
@@ -688,6 +705,7 @@ ensure_host_tools() {
   local missing=()
   command -v curl >/dev/null 2>&1 || missing+=(curl)
   command -v jq >/dev/null 2>&1 || missing+=(jq)
+  command -v openssl >/dev/null 2>&1 || missing+=(openssl)
   command -v qrencode >/dev/null 2>&1 || missing+=(qrencode)
   [[ "${#missing[@]}" -eq 0 ]] && return 0
   command -v apt-get >/dev/null 2>&1 || {
@@ -744,7 +762,7 @@ load_existing_env() {
     key="${key%$'\r'}"
     value="${value%$'\r'}"
     case "$key" in
-      HY2_PORT|VLESS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|CF_Token|CF_Account_ID|CF_Zone_ID)
+      HY2_PORT|VLESS_PORT|ANYTLS_PORT|SS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|ENABLE_ANYTLS|ENABLE_SS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|ANYTLS_PASSWORD|SS_PASSWORD|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|CF_Token|CF_Account_ID|CF_Zone_ID)
         printf -v "$key" '%s' "$value"
         ;;
     esac
@@ -789,6 +807,14 @@ collect_bootstrap_inputs() {
   if [[ "$ENABLE_VLESS" == "true" ]]; then
     VLESS_PORT="$(ask_input "VLESS 端口" "$VLESS_PORT")"
   fi
+  ENABLE_ANYTLS="$(normalize_bool "$(ask_choice "启用 AnyTLS (y/n 或 true/false)" "${ENABLE_ANYTLS}")")"
+  if [[ "$ENABLE_ANYTLS" == "true" ]]; then
+    ANYTLS_PORT="$(ask_input "AnyTLS 端口" "$ANYTLS_PORT")"
+  fi
+  ENABLE_SS="$(normalize_bool "$(ask_choice "启用 Shadowsocks (y/n 或 true/false)" "${ENABLE_SS}")")"
+  if [[ "$ENABLE_SS" == "true" ]]; then
+    SS_PORT="$(ask_input "Shadowsocks 端口" "$SS_PORT")"
+  fi
   MIXED_PORT="$(ask_input "本机 Mixed 代理端口 (HTTP+SOCKS5，仅 127.0.0.1)" "$MIXED_PORT")"
 
   if [[ "$(normalize_bool "$(ask_choice "配置高级选项 (y/n)" "n")")" == "true" ]]; then
@@ -811,6 +837,8 @@ confirm_config() {
   printf "  Cloudflare Token: 已配置（不会显示）\n" >&2
   printf "  HY2: %s (端口 %s)\n" "$ENABLE_HY2" "$HY2_PORT" >&2
   printf "  VLESS: %s (端口 %s)\n" "$ENABLE_VLESS" "$VLESS_PORT" >&2
+  printf "  AnyTLS: %s (端口 %s)\n" "$ENABLE_ANYTLS" "$ANYTLS_PORT" >&2
+  printf "  Shadowsocks: %s (端口 %s)\n" "$ENABLE_SS" "$SS_PORT" >&2
   printf "  Mixed 端口: %s (仅本机)\n" "$MIXED_PORT" >&2
   [[ "$(normalize_bool "$(ask_choice "确认并继续 (y/n)" "y")")" == "true" ]]
 }
@@ -843,9 +871,20 @@ validate_env_value() {
   }
 }
 
+validate_secret_value() {
+  local name="$1"
+  local value="$2"
+  [[ "$value" =~ ^[A-Za-z0-9_./:@%+,=-]*$ ]] || {
+    err "$name 包含不支持的字符"
+    exit 1
+  }
+}
+
 validate_config() {
   validate_true_false "ENABLE_HY2" "$ENABLE_HY2"
   validate_true_false "ENABLE_VLESS" "$ENABLE_VLESS"
+  validate_true_false "ENABLE_ANYTLS" "$ENABLE_ANYTLS"
+  validate_true_false "ENABLE_SS" "$ENABLE_SS"
   validate_true_false "AUTO_DOMAIN" "$AUTO_DOMAIN"
   validate_bool "$AUTO_TLS"
   if [[ "$ENABLE_HY2" == "true" ]]; then
@@ -853,6 +892,12 @@ validate_config() {
   fi
   if [[ "$ENABLE_VLESS" == "true" ]]; then
     validate_port "VLESS_PORT" "$VLESS_PORT"
+  fi
+  if [[ "$ENABLE_ANYTLS" == "true" ]]; then
+    validate_port "ANYTLS_PORT" "$ANYTLS_PORT"
+  fi
+  if [[ "$ENABLE_SS" == "true" ]]; then
+    validate_port "SS_PORT" "$SS_PORT"
   fi
   validate_port "MIXED_PORT" "$MIXED_PORT"
   validate_positive_int "TLS_ISSUE_RETRIES" "$TLS_ISSUE_RETRIES"
@@ -870,12 +915,15 @@ validate_config() {
   validate_env_value "AUTH_UUID" "$AUTH_UUID"
   validate_env_value "HY2_PASSWORD" "$HY2_PASSWORD"
   validate_env_value "VLESS_UUID" "$VLESS_UUID"
+  validate_secret_value "ANYTLS_PASSWORD" "$ANYTLS_PASSWORD"
+  validate_secret_value "SS_PASSWORD" "$SS_PASSWORD"
   validate_env_value "WARP_LICENSE_KEY" "$WARP_LICENSE_KEY"
   validate_env_value "CF_Token" "$CF_Token"
   validate_env_value "CF_Account_ID" "$CF_Account_ID"
   validate_env_value "CF_Zone_ID" "$CF_Zone_ID"
-  if [[ "$ENABLE_HY2" != "true" && "$ENABLE_VLESS" != "true" ]]; then
-    err "至少要启用一种协议 (ENABLE_HY2/ENABLE_VLESS)"
+  if [[ "$ENABLE_HY2" != "true" && "$ENABLE_VLESS" != "true" &&
+        "$ENABLE_ANYTLS" != "true" && "$ENABLE_SS" != "true" ]]; then
+    err "至少要启用一种协议 (ENABLE_HY2/ENABLE_VLESS/ENABLE_ANYTLS/ENABLE_SS)"
     exit 1
   fi
   if [[ "$ENABLE_VLESS" == "true" ]]; then
@@ -886,12 +934,21 @@ validate_config() {
       exit 1
     fi
   fi
-  if [[ "$ENABLE_HY2" == "true" && "$MIXED_PORT" == "$HY2_PORT" ]] ||
-     [[ "$ENABLE_VLESS" == "true" && "$MIXED_PORT" == "$VLESS_PORT" ]] ||
-     [[ "$ENABLE_HY2" == "true" && "$ENABLE_VLESS" == "true" && "$HY2_PORT" == "$VLESS_PORT" ]]; then
-    err "HY2、VLESS 和 Mixed 端口不能重复"
-    exit 1
-  fi
+  local -a enabled_ports=()
+  [[ "$ENABLE_HY2" == "true" ]] && enabled_ports+=("HY2:$HY2_PORT")
+  [[ "$ENABLE_VLESS" == "true" ]] && enabled_ports+=("VLESS:$VLESS_PORT")
+  [[ "$ENABLE_ANYTLS" == "true" ]] && enabled_ports+=("AnyTLS:$ANYTLS_PORT")
+  [[ "$ENABLE_SS" == "true" ]] && enabled_ports+=("Shadowsocks:$SS_PORT")
+  enabled_ports+=("Mixed:$MIXED_PORT")
+  local port_item port_value seen_ports=""
+  for port_item in "${enabled_ports[@]}"; do
+    port_value="${port_item#*:}"
+    [[ " $seen_ports " != *" $port_value "* ]] || {
+      err "启用协议端口不能重复: $port_value"
+      exit 1
+    }
+    seen_ports="$seen_ports $port_value"
+  done
 
   if [[ "$AUTO_TLS" == "true" ]]; then
     if [[ "$AUTO_DOMAIN" != "true" ]]; then
@@ -922,6 +979,14 @@ write_compose() {
   if [[ "$ENABLE_VLESS" == "true" ]]; then
     ports_block="${ports_block}
       - \"\${VLESS_PORT:-38443}:\${VLESS_PORT:-38443}/tcp\""
+  fi
+  if [[ "$ENABLE_ANYTLS" == "true" ]]; then
+    ports_block="${ports_block}
+      - \"\${ANYTLS_PORT:-4443}:\${ANYTLS_PORT:-4443}/tcp\""
+  fi
+  if [[ "$ENABLE_SS" == "true" ]]; then
+    ports_block="${ports_block}
+      - \"\${SS_PORT:-48443}:\${SS_PORT:-48443}/tcp\""
   fi
   ports_block="${ports_block}
       - \"127.0.0.1:\${MIXED_PORT:-1080}:\${MIXED_PORT:-1080}/tcp\""
@@ -958,12 +1023,18 @@ ${ports_block}
     environment:
       - HY2_PORT=\${HY2_PORT:-32443}
       - VLESS_PORT=\${VLESS_PORT:-38443}
+      - ANYTLS_PORT=\${ANYTLS_PORT:-4443}
+      - SS_PORT=\${SS_PORT:-48443}
       - MIXED_PORT=\${MIXED_PORT:-1080}
       - ENABLE_HY2=\${ENABLE_HY2:-true}
       - ENABLE_VLESS=\${ENABLE_VLESS:-true}
+      - ENABLE_ANYTLS=\${ENABLE_ANYTLS:-false}
+      - ENABLE_SS=\${ENABLE_SS:-false}
       - AUTH_UUID=\${AUTH_UUID:-}
       - HY2_PASSWORD=\${HY2_PASSWORD:-}
       - VLESS_UUID=\${VLESS_UUID:-}
+      - ANYTLS_PASSWORD=\${ANYTLS_PASSWORD:-}
+      - SS_PASSWORD=\${SS_PASSWORD:-}
       - AUTO_TLS=\${AUTO_TLS:-false}
       - TLS_DOMAIN=\${TLS_DOMAIN:-}
       - NODE_NAME=\${NODE_NAME:-}
@@ -983,15 +1054,21 @@ write_env() {
   cat >"$ENV_FILE" <<EOF
 HY2_PORT=$HY2_PORT
 VLESS_PORT=$VLESS_PORT
+ANYTLS_PORT=$ANYTLS_PORT
+SS_PORT=$SS_PORT
 MIXED_PORT=$MIXED_PORT
 ENABLE_HY2=$ENABLE_HY2
 ENABLE_VLESS=$ENABLE_VLESS
+ENABLE_ANYTLS=$ENABLE_ANYTLS
+ENABLE_SS=$ENABLE_SS
 AUTO_DOMAIN=$AUTO_DOMAIN
 BASE_DOMAIN=$BASE_DOMAIN
 NODE_NAME=$NODE_NAME
 AUTH_UUID=$AUTH_UUID
 HY2_PASSWORD=$HY2_PASSWORD
 VLESS_UUID=$VLESS_UUID
+ANYTLS_PASSWORD=$ANYTLS_PASSWORD
+SS_PASSWORD=$SS_PASSWORD
 AUTO_TLS=$AUTO_TLS
 TLS_DOMAIN=$TLS_DOMAIN
 TLS_CERT_PATH=$TLS_CERT_PATH
@@ -1236,6 +1313,8 @@ cmd_show_nodes() {
   local cfg
   local hy2_password hy2_port hy2_sni hy2_tag hy2_insecure hy2_link
   local vless_uuid vless_port vless_sni vless_tag vless_flow vless_link
+  local anytls_password anytls_port anytls_sni anytls_tag anytls_link
+  local ss_password ss_port ss_method ss_tag ss_link ss_userinfo
   local node_name
   local has_any="false"
   node_name="$(normalize_name "${NODE_NAME:-${TLS_DOMAIN:-node}}")"
@@ -1275,6 +1354,35 @@ cmd_show_nodes() {
     printf '[node] %s\n' "$vless_link"
     if command -v qrencode >/dev/null 2>&1; then
       qrencode -t ANSIUTF8 "$vless_link"
+    fi
+    has_any="true"
+  fi
+
+  anytls_password="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="anytls") | .users[0].password // empty' | head -n1)"
+  anytls_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="anytls") | .listen_port // empty' | head -n1)"
+  anytls_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="anytls") | .tls.server_name // empty' | head -n1)"
+  anytls_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="anytls") | .tag // empty' | head -n1)"
+  if [[ -n "$anytls_password" && -n "$anytls_port" && -n "$anytls_sni" ]]; then
+    anytls_tag="${anytls_tag:-anytls-${node_name}}"
+    anytls_link="anytls://${anytls_password}@${anytls_sni}:${anytls_port}/?sni=${anytls_sni}#${anytls_tag}"
+    printf '[node] %s\n' "$anytls_link"
+    if command -v qrencode >/dev/null 2>&1; then
+      qrencode -t ANSIUTF8 "$anytls_link"
+    fi
+    has_any="true"
+  fi
+
+  ss_password="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="shadowsocks") | .password // empty' | head -n1)"
+  ss_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="shadowsocks") | .listen_port // empty' | head -n1)"
+  ss_method="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="shadowsocks") | .method // empty' | head -n1)"
+  ss_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="shadowsocks") | .tag // empty' | head -n1)"
+  if [[ -n "$ss_password" && -n "$ss_port" && -n "$ss_method" && -n "$TLS_DOMAIN" ]]; then
+    ss_tag="${ss_tag:-ss-${node_name}}"
+    ss_userinfo="$(printf '%s:%s' "$ss_method" "$ss_password" | base64 | tr -d '\r\n')"
+    ss_link="ss://${ss_userinfo}@${TLS_DOMAIN}:${ss_port}#${ss_tag}"
+    printf '[node] %s\n' "$ss_link"
+    if command -v qrencode >/dev/null 2>&1; then
+      qrencode -t ANSIUTF8 "$ss_link"
     fi
     has_any="true"
   fi
