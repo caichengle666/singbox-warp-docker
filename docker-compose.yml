@@ -42,8 +42,8 @@ services:
     mem_limit: 512m
     pids_limit: 256
     healthcheck:
-      # 检查 sing-box 进程存活，并经 Mixed/WARP 出口发起真实 HTTPS 请求
-      test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"$(cat /run/sing-box.pid)\" && curl -fsS --max-time 3 --proxy \"socks5h://127.0.0.1:${MIXED_PORT:-1080}\" https://cp.cloudflare.com/ >/dev/null"]
+      # WARP 故障时仍保持 healthy；出口可用性由 entrypoint 的探测器负责切换
+      test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"$(cat /run/sing-box.pid)\""]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -83,6 +83,9 @@ services:
 
       # WARP+ 可选，不填为普通 WARP
       - WARP_LICENSE_KEY=${WARP_LICENSE_KEY:-}
+      # WARP 不可用时保持 direct；true 时按间隔后台探测并自动恢复到 warp
+      - WARP_AUTORECOVER=${WARP_AUTORECOVER:-true}
+      - WARP_PROBE_INTERVAL=${WARP_PROBE_INTERVAL:-60}
 
       # [必填] 仅 AUTO_TLS=true 需要 CF_Token（需有对应 Zone 的 DNS 编辑权限）
       - CF_Token=${CF_Token:-}

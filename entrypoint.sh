@@ -21,6 +21,8 @@ TLS_ISSUE_RETRIES_ENV="${TLS_ISSUE_RETRIES:-3}"
 TLS_RENEW_INTERVAL_ENV="${TLS_RENEW_INTERVAL:-43200}"
 TLS_CERT_PATH_ENV="${TLS_CERT_PATH:-/etc/sing-box/certs/fullchain.pem}"
 TLS_KEY_PATH_ENV="${TLS_KEY_PATH:-/etc/sing-box/certs/privkey.pem}"
+WARP_AUTORECOVER_ENV="${WARP_AUTORECOVER:-true}"
+WARP_PROBE_INTERVAL_ENV="${WARP_PROBE_INTERVAL:-60}"
 WARP_LICENSE_KEY_ENV="${WARP_LICENSE_KEY:-}"
 AUTH_UUID_ENV="${AUTH_UUID:-}"
 HY2_PASSWORD_ENV="${HY2_PASSWORD:-}"
@@ -31,6 +33,10 @@ NODE_NAME_ENV="${NODE_NAME:-}"
 SINGBOX_PID=""
 STOP_REQUESTED="false"
 PROCESS_CHECK_INTERVAL_SECONDS=10
+WARP_MONITOR_PID=""
+WARP_ROUTE_STATE_FILE="/run/warp-route.state"
+WARP_PROBE_CONFIG="/run/warp-probe.json"
+WARP_PROBE_PORT=18080
 
 validate_positive_integer() {
   local name="$1"
@@ -183,6 +189,10 @@ stop_singbox() {
 
 handle_signal() {
   STOP_REQUESTED="true"
+  if [ -n "$WARP_MONITOR_PID" ] && kill -0 "$WARP_MONITOR_PID" 2>/dev/null; then
+    kill "$WARP_MONITOR_PID" 2>/dev/null || true
+    wait "$WARP_MONITOR_PID" 2>/dev/null || true
+  fi
   stop_singbox
   exit 0
 }
@@ -192,6 +202,89 @@ start_singbox() {
   sing-box run -c "$SB_CONFIG" &
   SINGBOX_PID="$!"
   printf '%s\n' "$SINGBOX_PID" > "$SINGBOX_PID_FILE"
+}
+
+set_route_outbound() {
+  local outbound="$1"
+  local current=""
+  if [ -f "$WARP_ROUTE_STATE_FILE" ]; then
+    current="$(cat "$WARP_ROUTE_STATE_FILE" 2>/dev/null || true)"
+  fi
+  if [ "$current" = "$outbound" ]; then
+    return 0
+  fi
+
+  local tmp_config
+  tmp_config="$(mktemp)"
+  if ! jq --arg outbound "$outbound" \
+    '.route.rules = [{"action":"route","outbound":$outbound}]' \
+    "$SB_CONFIG" > "$tmp_config"; then
+    rm -f "$tmp_config"
+    echo "[warp] failed to prepare $outbound route; keeping $current"
+    return 1
+  fi
+  if ! jq empty "$tmp_config" >/dev/null; then
+    rm -f "$tmp_config"
+    echo "[warp] generated $outbound route is invalid; keeping $current"
+    return 1
+  fi
+  mv "$tmp_config" "$SB_CONFIG"
+  printf '%s\n' "$outbound" > "$WARP_ROUTE_STATE_FILE"
+  echo "[warp] route switched to $outbound"
+  if [ -n "$SINGBOX_PID" ] && kill -0 "$SINGBOX_PID" 2>/dev/null; then
+    kill -HUP "$SINGBOX_PID" 2>/dev/null || true
+  fi
+}
+
+warp_probe_once() {
+  local probe_log probe_pid ready=0 i
+  probe_log="$(mktemp)"
+  jq --argjson port "$WARP_PROBE_PORT" \
+    '.inbounds = [{"type":"mixed","tag":"warp-probe","listen":"127.0.0.1","listen_port":$port}] |
+     .route.rules = [{"action":"route","outbound":"warp"}] |
+     .log.level = "error"' \
+    "$SB_CONFIG" > "$WARP_PROBE_CONFIG" 2>/dev/null || {
+      rm -f "$probe_log" "$WARP_PROBE_CONFIG"
+      return 1
+    }
+
+  sing-box run -c "$WARP_PROBE_CONFIG" >"$probe_log" 2>&1 &
+  probe_pid="$!"
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if ! kill -0 "$probe_pid" 2>/dev/null; then
+      break
+    fi
+    if curl -fsS --max-time 1 --proxy "socks5h://127.0.0.1:${WARP_PROBE_PORT}" \
+      https://cp.cloudflare.com/ >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 1
+  done
+  kill -TERM "$probe_pid" 2>/dev/null || true
+  wait "$probe_pid" 2>/dev/null || true
+  rm -f "$probe_log" "$WARP_PROBE_CONFIG"
+  [ "$ready" -eq 1 ]
+}
+
+warp_monitor_loop() {
+  local last_result=""
+  while [ "$STOP_REQUESTED" != "true" ]; do
+    if warp_probe_once; then
+      if [ "$last_result" != "available" ]; then
+        echo "[warp] availability probe succeeded"
+        last_result="available"
+      fi
+      set_route_outbound "warp" || true
+    else
+      if [ "$last_result" != "unavailable" ]; then
+        echo "[warp] availability probe failed; using direct"
+        last_result="unavailable"
+      fi
+      set_route_outbound "direct" || true
+    fi
+    sleep "$WARP_PROBE_INTERVAL_ENV"
+  done
 }
 
 validate_required_config() {
@@ -215,6 +308,11 @@ validate_required_config() {
     echo "[config] ENABLE_SS must be true or false, got: $ENABLE_SS_ENV"
     exit 1
   fi
+  if [ "$WARP_AUTORECOVER_ENV" != "true" ] && [ "$WARP_AUTORECOVER_ENV" != "false" ]; then
+    echo "[config] WARP_AUTORECOVER must be true or false, got: $WARP_AUTORECOVER_ENV"
+    exit 1
+  fi
+  validate_positive_integer "WARP_PROBE_INTERVAL" "$WARP_PROBE_INTERVAL_ENV"
   if [ "$ENABLE_HY2_ENV" != "true" ] && [ "$ENABLE_VLESS_ENV" != "true" ] &&
      [ "$ENABLE_ANYTLS_ENV" != "true" ] && [ "$ENABLE_SS_ENV" != "true" ]; then
     echo "[config] at least one inbound must be enabled"
@@ -417,6 +515,9 @@ mv "$tmp_config" "$SB_CONFIG"
 
 jq empty "$SB_CONFIG" >/dev/null
 
+cp "$SB_CONFIG" "${SB_CONFIG}.pre-warp-fallback" 2>/dev/null || true
+set_route_outbound "direct"
+
 HY2_TAG="$(jq -r '.inbounds[] | select(.type=="hysteria2") | .tag // "hy2"' "$SB_CONFIG" | head -n1)"
 VLESS_TAG="$(jq -r '.inbounds[] | select(.type=="vless") | .tag // "vless"' "$SB_CONFIG" | head -n1)"
 
@@ -428,6 +529,18 @@ if [[ -n "$VLESS_TAG" ]]; then
 fi
 
 start_singbox
+
+if warp_probe_once; then
+  echo "[warp] startup availability probe succeeded"
+  set_route_outbound "warp"
+else
+  echo "[warp] startup availability probe failed; using direct"
+fi
+
+if [ "$WARP_AUTORECOVER_ENV" = "true" ]; then
+  warp_monitor_loop &
+  WARP_MONITOR_PID="$!"
+fi
 
 trap handle_signal TERM INT HUP
 

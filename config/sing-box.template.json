@@ -107,7 +107,7 @@
     "rules": [
       {
         "action": "route",
-        "outbound": "warp"
+        "outbound": "direct"
       }
     ]
   }
