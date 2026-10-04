@@ -83,9 +83,11 @@ services:
 
       # WARP+ 可选，不填为普通 WARP
       - WARP_LICENSE_KEY=${WARP_LICENSE_KEY:-}
+      - WARP_MODE=${WARP_MODE:-auto}
       # WARP 不可用时保持 direct；true 时按间隔后台探测并自动恢复到 warp
       - WARP_AUTORECOVER=${WARP_AUTORECOVER:-true}
       - WARP_PROBE_INTERVAL=${WARP_PROBE_INTERVAL:-60}
+      - USQUE_HTTP2=${USQUE_HTTP2:-true}
 
       # [必填] 仅 AUTO_TLS=true 需要 CF_Token（需有对应 Zone 的 DNS 编辑权限）
       - CF_Token=${CF_Token:-}

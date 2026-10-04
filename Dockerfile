@@ -1,3 +1,11 @@
+FROM golang:1.26.3-bookworm AS usque-builder
+
+ARG USQUE_VERSION="4.2.1"
+
+RUN git clone --depth 1 --branch "v${USQUE_VERSION}" https://github.com/Diniboy1123/usque.git /src/usque \
+    && cd /src/usque \
+    && CGO_ENABLED=0 go build -ldflags="-s -w" -o /usque
+
 FROM debian:trixie-slim
 
 ARG SINGBOX_VERSION=""
@@ -37,6 +45,7 @@ WORKDIR /app
 
 COPY entrypoint.sh /entrypoint.sh
 COPY config/sing-box.template.json /etc/sing-box/template.json
+COPY --from=usque-builder /usque /usr/local/bin/usque
 
 RUN sed -i 's/\r$//' /entrypoint.sh \
     && chmod +x /entrypoint.sh

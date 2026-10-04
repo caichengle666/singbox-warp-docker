@@ -21,8 +21,10 @@ TLS_ISSUE_RETRIES_ENV="${TLS_ISSUE_RETRIES:-3}"
 TLS_RENEW_INTERVAL_ENV="${TLS_RENEW_INTERVAL:-43200}"
 TLS_CERT_PATH_ENV="${TLS_CERT_PATH:-/etc/sing-box/certs/fullchain.pem}"
 TLS_KEY_PATH_ENV="${TLS_KEY_PATH:-/etc/sing-box/certs/privkey.pem}"
+WARP_MODE_ENV="${WARP_MODE:-auto}"
 WARP_AUTORECOVER_ENV="${WARP_AUTORECOVER:-true}"
 WARP_PROBE_INTERVAL_ENV="${WARP_PROBE_INTERVAL:-60}"
+USQUE_HTTP2_ENV="${USQUE_HTTP2:-true}"
 WARP_LICENSE_KEY_ENV="${WARP_LICENSE_KEY:-}"
 AUTH_UUID_ENV="${AUTH_UUID:-}"
 HY2_PASSWORD_ENV="${HY2_PASSWORD:-}"
@@ -37,6 +39,9 @@ WARP_MONITOR_PID=""
 WARP_ROUTE_STATE_FILE="/run/warp-route.state"
 WARP_PROBE_CONFIG="/run/warp-probe.json"
 WARP_PROBE_PORT=18080
+USQUE_PORT=18081
+USQUE_CONFIG="${WGCF_DIR}/usque-config.json"
+USQUE_PID=""
 WARP_PROBE_URLS=(
   "https://api.ipify.org"
   "https://www.cloudflare.com/cdn-cgi/trace"
@@ -192,14 +197,60 @@ stop_singbox() {
   rm -f "$SINGBOX_PID_FILE"
 }
 
+stop_usque() {
+  if [ -n "$USQUE_PID" ] && kill -0 "$USQUE_PID" 2>/dev/null; then
+    echo "[usque] stopping"
+    kill -TERM "$USQUE_PID" 2>/dev/null || true
+    wait "$USQUE_PID" 2>/dev/null || true
+  fi
+  USQUE_PID=""
+}
+
 handle_signal() {
   STOP_REQUESTED="true"
   if [ -n "$WARP_MONITOR_PID" ] && kill -0 "$WARP_MONITOR_PID" 2>/dev/null; then
     kill "$WARP_MONITOR_PID" 2>/dev/null || true
     wait "$WARP_MONITOR_PID" 2>/dev/null || true
   fi
+  stop_usque
   stop_singbox
   exit 0
+}
+
+start_usque() {
+  if ! command -v usque >/dev/null 2>&1; then
+    echo "[usque] binary is not installed"
+    return 1
+  fi
+  if [ ! -s "$USQUE_CONFIG" ]; then
+    echo "[usque] registering MASQUE account"
+    if ! usque -c "$USQUE_CONFIG" register >/dev/null; then
+      echo "[usque] registration failed"
+      return 1
+    fi
+  fi
+  stop_usque
+  echo "[usque] starting SOCKS5 proxy on 127.0.0.1:${USQUE_PORT}"
+  if [ "$USQUE_HTTP2_ENV" = "true" ]; then
+    usque --http2 -c "$USQUE_CONFIG" socks -b 127.0.0.1 -p "$USQUE_PORT" >/run/usque.log 2>&1 &
+  else
+    usque -c "$USQUE_CONFIG" socks -b 127.0.0.1 -p "$USQUE_PORT" >/run/usque.log 2>&1 &
+  fi
+  USQUE_PID="$!"
+  sleep 1
+  kill -0 "$USQUE_PID" 2>/dev/null
+}
+
+usque_probe_once() {
+  [ -n "$USQUE_PID" ] && kill -0 "$USQUE_PID" 2>/dev/null || return 1
+  local probe_url
+  for probe_url in "${WARP_PROBE_URLS[@]}"; do
+    if curl -fsS --connect-timeout 2 --max-time 5 \
+      --proxy "socks5h://127.0.0.1:${USQUE_PORT}" "$probe_url" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 start_singbox() {
@@ -278,17 +329,34 @@ warp_probe_once() {
 warp_monitor_loop() {
   local last_result=""
   while [ "$STOP_REQUESTED" != "true" ]; do
-    if warp_probe_once; then
-      if [ "$last_result" != "available" ]; then
-        echo "[warp] availability probe succeeded"
-        last_result="available"
+    current_route="$(cat "$WARP_ROUTE_STATE_FILE" 2>/dev/null || printf 'direct')"
+    if [ "$current_route" = "usque" ] && usque_probe_once; then
+      if [ "$last_result" != "usque" ]; then
+        echo "[warp] usque availability probe succeeded"
+        last_result="usque"
       fi
+      set_route_outbound "usque" || true
+    elif [ "$current_route" = "warp" ] && warp_probe_once; then
+      if [ "$last_result" != "available" ]; then
+        echo "[warp] WireGuard availability probe succeeded"
+        last_result="warp"
+      fi
+      set_route_outbound "warp" || true
+    elif { [ "$WARP_MODE_ENV" = "auto" ] || [ "$WARP_MODE_ENV" = "usque" ]; } &&
+      start_usque && usque_probe_once; then
+      echo "[warp] switching to usque"
+      set_route_outbound "usque" || true
+    elif { [ "$WARP_MODE_ENV" = "auto" ] || [ "$WARP_MODE_ENV" = "wireguard" ]; } &&
+      warp_probe_once; then
+      stop_usque
+      echo "[warp] switching to WireGuard"
       set_route_outbound "warp" || true
     else
       if [ "$last_result" != "unavailable" ]; then
         echo "[warp] availability probe failed; using direct"
         last_result="unavailable"
       fi
+      stop_usque
       set_route_outbound "direct" || true
     fi
     sleep "$WARP_PROBE_INTERVAL_ENV"
@@ -318,6 +386,14 @@ validate_required_config() {
   fi
   if [ "$WARP_AUTORECOVER_ENV" != "true" ] && [ "$WARP_AUTORECOVER_ENV" != "false" ]; then
     echo "[config] WARP_AUTORECOVER must be true or false, got: $WARP_AUTORECOVER_ENV"
+    exit 1
+  fi
+  case "$WARP_MODE_ENV" in
+    auto|usque|wireguard|direct) ;;
+    *) echo "[config] WARP_MODE must be auto, usque, wireguard, or direct, got: $WARP_MODE_ENV"; exit 1 ;;
+  esac
+  if [ "$USQUE_HTTP2_ENV" != "true" ] && [ "$USQUE_HTTP2_ENV" != "false" ]; then
+    echo "[config] USQUE_HTTP2 must be true or false, got: $USQUE_HTTP2_ENV"
     exit 1
   fi
   validate_positive_integer "WARP_PROBE_INTERVAL" "$WARP_PROBE_INTERVAL_ENV"
@@ -538,12 +614,37 @@ fi
 
 start_singbox
 
-if warp_probe_once; then
-  echo "[warp] startup availability probe succeeded"
-  set_route_outbound "warp"
-else
-  echo "[warp] startup availability probe failed; using direct"
-fi
+case "$WARP_MODE_ENV" in
+  direct)
+    echo "[warp] mode=direct"
+    ;;
+  usque)
+    if start_usque && usque_probe_once; then
+      set_route_outbound "usque"
+    else
+      stop_usque
+      echo "[warp] usque unavailable; using direct"
+    fi
+    ;;
+  wireguard)
+    if warp_probe_once; then
+      set_route_outbound "warp"
+    else
+      echo "[warp] WireGuard unavailable; using direct"
+    fi
+    ;;
+  auto)
+    if start_usque && usque_probe_once; then
+      set_route_outbound "usque"
+    elif warp_probe_once; then
+      stop_usque
+      set_route_outbound "warp"
+    else
+      stop_usque
+      echo "[warp] usque and WireGuard unavailable; using direct"
+    fi
+    ;;
+esac
 
 if [ "$WARP_AUTORECOVER_ENV" = "true" ]; then
   warp_monitor_loop &

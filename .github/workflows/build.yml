@@ -172,6 +172,7 @@ jobs:
           build-args: |
             SINGBOX_VERSION=${{ steps.versions.outputs.singbox }}
             WGCF_VERSION=${{ steps.versions.outputs.wgcf }}
+            USQUE_VERSION=4.2.1
 
       - name: Cleanup old GHCR versions (keep latest 3)
         if: steps.gate.outputs.should_build == 'true'
