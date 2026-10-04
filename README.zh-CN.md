@@ -88,6 +88,8 @@ swd
 - `.env` `ANYTLS_PORT`，默认 `4443`；启用 `ENABLE_ANYTLS=true` 后开放
 - `.env` `SS_PORT`，默认 `48443`；启用 `ENABLE_SS=true` 后开放
 - `.env` `MIXED_PORT`，默认 `1080`（**本地 HTTP+SOCKS5 代理入口**，详见下节）
+- `.env` `ENABLE_HY2`，默认 `true`
+- `.env` `ENABLE_VLESS`，默认 `true`
 - `.env` `ENABLE_ANYTLS`，默认 `false`
 - `.env` `ENABLE_SS`，默认 `false`
 - `.env` `AUTH_UUID`，统一设置 `hy2 password` 和 `vless uuid`
@@ -101,6 +103,11 @@ swd
 - `.env` `TLS_ISSUE_RETRIES`，默认 `3`
 - `.env` `TLS_RENEW_INTERVAL`，默认 `43200`
 - `.env` `WARP_LICENSE_KEY`，可选，用于绑定 WARP+ 许可证
+- `.env` `NODE_NAME`，可选；留空时由一键脚本按 IP/城市自动生成节点名前缀
+- `.env` `WARP_MODE`，默认 `auto`；可选 `auto` / `usque` / `wireguard` / `direct`
+- `.env` `WARP_AUTORECOVER`，默认 `true`；WARP 不可用时先走 direct，恢复后自动切回
+- `.env` `WARP_PROBE_INTERVAL`，默认 `60`（秒），WARP 恢复探测间隔
+- `.env` `USQUE_HTTP2`，默认 `true`；usque 走 MASQUE over HTTP/2（TCP 443）
 - `./data/wgcf-account.toml`，如果你已有 WARP 账户文件，可直接复用
 
 ## 本地代理入口（MIXED）
@@ -110,7 +117,9 @@ swd
 - **SOCKS5 代理**：`socks5://127.0.0.1:1080`
 - **HTTP CONNECT 代理**：`http://127.0.0.1:1080`
 
-**所有流量都通过 WARP 出口出去**，最终出口 IP 是 Cloudflare 边缘节点，**不是**你服务器本身的 IP。
+**WARP 可用时所有流量都通过 WARP 出口出去**，最终出口 IP 是 Cloudflare 边缘节点，**不是**你服务器本身的 IP。
+
+WARP 不可用时（例如出站 UDP 被平台限制）会自动回退到 direct，保证节点本身仍可正常使用；恢复后按 `WARP_PROBE_INTERVAL` 自动切回。
 
 典型用途：
 
@@ -356,7 +365,7 @@ chmod +x ./deploy.sh
 | `vless` | 外部节点出站 | v2rayN/Nekoray 等（自用或分享） |
 | `mixed` | **本地 HTTP+SOCKS5 代理** | 宿主机工具 |
 
-`mixed` 不需要密码/TLS；容器内监听 `0.0.0.0:1080`，但 Docker 只映射到宿主机 `127.0.0.1:1080`，流量立刻被 WARP 出口接管。
+`mixed` 不需要密码/TLS；容器内监听 `0.0.0.0:1080`，但 Docker 只映射到宿主机 `127.0.0.1:1080`，流量走当前生效的出口（WARP 可用时为 WARP，否则为 direct）。
 
 你主要需要关注：
 

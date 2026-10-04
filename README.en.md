@@ -64,6 +64,14 @@ These can be changed if needed, but the service can still start with defaults:
 - `.env` `HY2_PORT`, default `32443`
 - `.env` `VLESS_PORT`, default `38443`
 - `.env` `MIXED_PORT`, default `1080` (**local HTTP+SOCKS5 proxy entry**, see next section)
+- `.env` `ENABLE_HY2`, default `true`
+- `.env` `ENABLE_VLESS`, default `true`
+- `.env` `ENABLE_ANYTLS`, default `false`
+- `.env` `ENABLE_SS`, default `false`
+- `.env` `ANYTLS_PORT`, default `4443`
+- `.env` `SS_PORT`, default `48443`
+- `.env` `HY2_PORT_HOPPING`, default `false`; the deploy script maps the HY2 UDP hop ports when enabled
+- `.env` `HY2_HOP_PORTS`, auto-selected from up to 50 consecutive free ports when left empty
 - `.env` `AUTH_UUID`, shared value for `hy2 password` and `vless uuid`
 - `.env` `HY2_PASSWORD`, override only `hy2 password`
 - `.env` `VLESS_UUID`, override only `vless uuid`
@@ -73,6 +81,11 @@ These can be changed if needed, but the service can still start with defaults:
 - `.env` `TLS_ISSUE_RETRIES`, default `3`
 - `.env` `TLS_RENEW_INTERVAL`, default `43200`
 - `.env` `WARP_LICENSE_KEY`, optional, for WARP+ license binding
+- `.env` `NODE_NAME`, optional; auto-generated from IP/city when left empty
+- `.env` `WARP_MODE`, default `auto`; one of `auto` / `usque` / `wireguard` / `direct`
+- `.env` `WARP_AUTORECOVER`, default `true`; stays on direct while WARP is down, switches back automatically once it recovers
+- `.env` `WARP_PROBE_INTERVAL`, default `60` (seconds), interval for the WARP recovery probe
+- `.env` `USQUE_HTTP2`, default `true`; usque uses MASQUE over HTTP/2 (TCP 443)
 - `./data/wgcf-account.toml`, if you already have a WARP account file to reuse
 
 ## Local proxy entry (MIXED)
@@ -82,7 +95,9 @@ sing-box inside the container runs a **`mixed`-type inbound**. Docker maps it to
 - **SOCKS5 proxy**: `socks5://127.0.0.1:1080`
 - **HTTP CONNECT proxy**: `http://127.0.0.1:1080`
 
-**All traffic exits through the WARP tunnel**, so the public egress IP is a Cloudflare edge node, **not** your server's own IP.
+**While WARP is available all traffic exits through the WARP tunnel**, so the public egress IP is a Cloudflare edge node, **not** your server's own IP.
+
+If WARP is unavailable (for example when outbound UDP is blocked by the platform), the route falls back to direct so the node keeps working, and switches back automatically once WARP recovers.
 
 Common uses:
 
@@ -293,7 +308,7 @@ Relationship between the 3 inbounds in the template:
 | `vless` | External node egress | v2rayN/Nekoray etc. (self-use or share) |
 | `mixed` | **Local HTTP+SOCKS5 proxy** | Host tools, Cloudflare Tunnel forwarding |
 
-`mixed` does not need password or TLS — it only listens inside the container (`0.0.0.0:1080`) and traffic is immediately handled by the WARP outbound.
+`mixed` does not need password or TLS — it only listens inside the container (`0.0.0.0:1080`) and traffic uses whichever outbound is active (WARP when available, otherwise direct).
 
 In most cases you mainly need to care about:
 
