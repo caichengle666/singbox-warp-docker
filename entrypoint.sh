@@ -37,6 +37,11 @@ WARP_MONITOR_PID=""
 WARP_ROUTE_STATE_FILE="/run/warp-route.state"
 WARP_PROBE_CONFIG="/run/warp-probe.json"
 WARP_PROBE_PORT=18080
+WARP_PROBE_URLS=(
+  "https://api.ipify.org"
+  "https://www.cloudflare.com/cdn-cgi/trace"
+  "https://api64.ipify.org?format=json"
+)
 
 validate_positive_integer() {
   local name="$1"
@@ -237,7 +242,7 @@ set_route_outbound() {
 }
 
 warp_probe_once() {
-  local probe_log probe_pid ready=0 i
+  local probe_log probe_pid ready=0 i probe_url
   probe_log="$(mktemp)"
   jq --argjson port "$WARP_PROBE_PORT" \
     '.inbounds = [{"type":"mixed","tag":"warp-probe","listen":"127.0.0.1","listen_port":$port}] |
@@ -250,15 +255,18 @@ warp_probe_once() {
 
   sing-box run -c "$WARP_PROBE_CONFIG" >"$probe_log" 2>&1 &
   probe_pid="$!"
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  for i in 1 2 3; do
     if ! kill -0 "$probe_pid" 2>/dev/null; then
       break
     fi
-    if curl -fsS --max-time 1 --proxy "socks5h://127.0.0.1:${WARP_PROBE_PORT}" \
-      https://cp.cloudflare.com/ >/dev/null 2>&1; then
-      ready=1
-      break
-    fi
+    for probe_url in "${WARP_PROBE_URLS[@]}"; do
+      if curl -fsS --connect-timeout 2 --max-time 4 \
+        --proxy "socks5h://127.0.0.1:${WARP_PROBE_PORT}" \
+        "$probe_url" >/dev/null 2>&1; then
+        ready=1
+        break 2
+      fi
+    done
     sleep 1
   done
   kill -TERM "$probe_pid" 2>/dev/null || true
