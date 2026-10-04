@@ -224,7 +224,7 @@ start_usque() {
   fi
   if [ ! -s "$USQUE_CONFIG" ]; then
     echo "[usque] registering MASQUE account"
-    if ! usque -c "$USQUE_CONFIG" register >/dev/null; then
+    if ! usque -c "$USQUE_CONFIG" register -a -n singbox-warp >/dev/null 2>&1; then
       echo "[usque] registration failed"
       return 1
     fi
@@ -232,7 +232,7 @@ start_usque() {
   stop_usque
   echo "[usque] starting SOCKS5 proxy on 127.0.0.1:${USQUE_PORT}"
   if [ "$USQUE_HTTP2_ENV" = "true" ]; then
-    usque --http2 -c "$USQUE_CONFIG" socks -b 127.0.0.1 -p "$USQUE_PORT" >/run/usque.log 2>&1 &
+    usque -c "$USQUE_CONFIG" socks --http2 -b 127.0.0.1 -p "$USQUE_PORT" >/run/usque.log 2>&1 &
   else
     usque -c "$USQUE_CONFIG" socks -b 127.0.0.1 -p "$USQUE_PORT" >/run/usque.log 2>&1 &
   fi
