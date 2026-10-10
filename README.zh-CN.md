@@ -106,7 +106,7 @@ swd
 - `.env` `NODE_NAME`，可选；留空时由一键脚本按 IP/城市自动生成节点名前缀
 - `.env` `WARP_MODE`，默认 `auto`；可选 `auto` / `usque` / `wireguard` / `direct`
 - `.env` `WARP_AUTORECOVER`，默认 `true`；WARP 不可用时先走 direct，恢复后自动切回
-- `.env` `WARP_PROBE_INTERVAL`，默认 `60`（秒），WARP 恢复探测间隔
+- `.env` `WARP_PROBE_INTERVAL`，默认 `60`（秒），WARP 健康检查间隔；正在使用的出口连续 3 次探测失败（失败后每 10 秒复查）才切换，避免网络抖动导致所有连接被断开；走 direct 时按 60 秒起、每次翻倍、最长 15 分钟的间隔重试；usque 注册失败后 1 小时内不再重试
 - `.env` `USQUE_HTTP2`，默认 `true`；usque 走 MASQUE over HTTP/2（TCP 443）
 - `./data/wgcf-account.toml`，如果你已有 WARP 账户文件，可直接复用
 

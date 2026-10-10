@@ -84,7 +84,7 @@ These can be changed if needed, but the service can still start with defaults:
 - `.env` `NODE_NAME`, optional; auto-generated from IP/city when left empty
 - `.env` `WARP_MODE`, default `auto`; one of `auto` / `usque` / `wireguard` / `direct`
 - `.env` `WARP_AUTORECOVER`, default `true`; stays on direct while WARP is down, switches back automatically once it recovers
-- `.env` `WARP_PROBE_INTERVAL`, default `60` (seconds), interval for the WARP recovery probe
+- `.env` `WARP_PROBE_INTERVAL`, default `60` (seconds), WARP health-check interval. The active egress is only abandoned after 3 consecutive failed probes (rechecked every 10s), so a blip doesn't drop every connection; while on direct, retries back off from the interval, doubling up to 15 minutes; a failed usque registration is not retried for 1 hour
 - `.env` `USQUE_HTTP2`, default `true`; usque uses MASQUE over HTTP/2 (TCP 443)
 - `./data/wgcf-account.toml`, if you already have a WARP account file to reuse
 

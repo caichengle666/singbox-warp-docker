@@ -42,6 +42,12 @@ USQUE_PORT=18081
 USQUE_CONFIG="${WGCF_DIR}/usque-config.json"
 USQUE_PID_FILE="/run/usque.pid"
 CREDENTIALS_FILE="${WGCF_DIR}/credentials.env"
+USQUE_REGISTER_STAMP="${WGCF_DIR}/.usque-register-last"
+USQUE_REGISTER_MIN_INTERVAL=3600
+USQUE_READY_TIMEOUT=10
+WARP_FAIL_THRESHOLD=3
+WARP_FAIL_RECHECK_INTERVAL=10
+WARP_RETRY_MAX_INTERVAL=900
 HY2_PORT_HOPPING_ENV="${HY2_PORT_HOPPING:-false}"
 HY2_HOP_PORTS_ENV="${HY2_HOP_PORTS:-}"
 WARP_PROBE_URLS=(
@@ -238,28 +244,98 @@ handle_signal() {
   exit 0
 }
 
+# Register a MASQUE device at most once per USQUE_REGISTER_MIN_INTERVAL, so a
+# Cloudflare refusal doesn't turn into a registration request every probe.
+register_usque() {
+  local now last wait_left out
+  now="$(date +%s)"
+  last="$(cat "$USQUE_REGISTER_STAMP" 2>/dev/null || printf '0')"
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  if (( now - last < USQUE_REGISTER_MIN_INTERVAL )); then
+    wait_left=$(( USQUE_REGISTER_MIN_INTERVAL - (now - last) ))
+    echo "[usque] registration failed recently; next attempt in ${wait_left}s"
+    return 1
+  fi
+  printf '%s\n' "$now" > "$USQUE_REGISTER_STAMP"
+  echo "[usque] registering MASQUE account"
+  if out="$(usque -c "$USQUE_CONFIG" register -a -n singbox-warp 2>&1)" && [ -s "$USQUE_CONFIG" ]; then
+    rm -f "$USQUE_REGISTER_STAMP"
+    echo "[usque] registration succeeded"
+    return 0
+  fi
+  rm -f "$USQUE_CONFIG"
+  echo "[usque] registration failed; retrying in at most ${USQUE_REGISTER_MIN_INTERVAL}s"
+  printf '%s\n' "$out" | tail -n 5 | sed 's/^/[usque]   /'
+  return 1
+}
+
 start_usque() {
   if ! command -v usque >/dev/null 2>&1; then
     echo "[usque] binary is not installed"
     return 1
   fi
   if [ ! -s "$USQUE_CONFIG" ]; then
-    echo "[usque] registering MASQUE account"
-    if ! usque -c "$USQUE_CONFIG" register -a -n singbox-warp >/dev/null 2>&1; then
-      echo "[usque] registration failed"
-      return 1
-    fi
+    register_usque || return 1
   fi
   stop_usque
   echo "[usque] starting SOCKS5 proxy on 127.0.0.1:${USQUE_PORT}"
+  local -a args=(-c "$USQUE_CONFIG" socks -b 127.0.0.1 -p "$USQUE_PORT")
   if [ "$USQUE_HTTP2_ENV" = "true" ]; then
-    usque -c "$USQUE_CONFIG" socks --http2 -b 127.0.0.1 -p "$USQUE_PORT" >/run/usque.log 2>&1 &
-  else
-    usque -c "$USQUE_CONFIG" socks -b 127.0.0.1 -p "$USQUE_PORT" >/run/usque.log 2>&1 &
+    args+=(--http2)
   fi
+  # Send usque output to the container log (rotated by Docker) with a prefix,
+  # instead of a file under /run that grows for as long as usque runs.
+  usque "${args[@]}" > >(sed -u 's/^/[usque] /') 2>&1 &
   printf '%s\n' "$!" > "$USQUE_PID_FILE"
-  sleep 1
+  sleep 0.5
   usque_running
+}
+
+# The MASQUE handshake can take a few seconds, so poll instead of probing once.
+usque_wait_ready() {
+  local deadline=$((SECONDS + USQUE_READY_TIMEOUT))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    usque_running || return 1
+    usque_probe_once && return 0
+    sleep 1
+  done
+  return 1
+}
+
+try_usque() {
+  if start_usque && usque_wait_ready; then
+    set_route_outbound "usque" || true
+    return 0
+  fi
+  stop_usque
+  return 1
+}
+
+try_wireguard() {
+  if warp_probe_once; then
+    stop_usque
+    set_route_outbound "warp" || true
+    return 0
+  fi
+  return 1
+}
+
+# Bring up the first working WARP egress allowed by WARP_MODE. In auto mode,
+# pass the egress that just failed to try the other one first.
+try_warp_egress() {
+  local failed="${1:-}"
+  case "$WARP_MODE_ENV" in
+    usque) try_usque ;;
+    wireguard) try_wireguard ;;
+    auto)
+      if [ "$failed" = "usque" ]; then
+        try_wireguard || try_usque
+      else
+        try_usque || try_wireguard
+      fi
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 usque_probe_once() {
@@ -335,40 +411,87 @@ warp_probe_once() {
   return 1
 }
 
+route_probe() {
+  case "$1" in
+    usque) usque_probe_once ;;
+    warp) warp_probe_once ;;
+    *) return 1 ;;
+  esac
+}
+
+# - A healthy egress is only abandoned after WARP_FAIL_THRESHOLD consecutive
+#   failed probes (rechecked every WARP_FAIL_RECHECK_INTERVAL seconds), since
+#   every route switch reloads sing-box and drops all client connections.
+# - While on direct, recovery attempts back off from WARP_PROBE_INTERVAL up to
+#   WARP_RETRY_MAX_INTERVAL instead of restarting usque every interval.
 warp_monitor_loop() {
-  local last_result=""
+  local current_route last_ok="" fail_count=0 now
+  local backoff="$WARP_PROBE_INTERVAL_ENV" next_retry sleep_for
+  # Startup has just tried every egress, so the first retry waits one interval.
+  next_retry=$(( $(date +%s) + WARP_PROBE_INTERVAL_ENV ))
   while [ "$STOP_REQUESTED" != "true" ]; do
+    sleep_for="$WARP_PROBE_INTERVAL_ENV"
     current_route="$(cat "$WARP_ROUTE_STATE_FILE" 2>/dev/null || printf 'direct')"
-    if [ "$current_route" = "usque" ] && usque_probe_once; then
-      if [ "$last_result" != "usque" ]; then
-        echo "[warp] usque availability probe succeeded"
-        last_result="usque"
-      fi
-      set_route_outbound "usque" || true
-    elif [ "$current_route" = "warp" ] && warp_probe_once; then
-      if [ "$last_result" != "warp" ]; then
-        echo "[warp] WireGuard availability probe succeeded"
-        last_result="warp"
-      fi
-      set_route_outbound "warp" || true
-    elif { [ "$WARP_MODE_ENV" = "auto" ] || [ "$WARP_MODE_ENV" = "usque" ]; } &&
-      start_usque && usque_probe_once; then
-      echo "[warp] switching to usque"
-      set_route_outbound "usque" || true
-    elif { [ "$WARP_MODE_ENV" = "auto" ] || [ "$WARP_MODE_ENV" = "wireguard" ]; } &&
-      warp_probe_once; then
-      stop_usque
-      echo "[warp] switching to WireGuard"
-      set_route_outbound "warp" || true
-    else
-      if [ "$last_result" != "unavailable" ]; then
-        echo "[warp] availability probe failed; using direct"
-        last_result="unavailable"
-      fi
-      stop_usque
-      set_route_outbound "direct" || true
-    fi
-    sleep "$WARP_PROBE_INTERVAL_ENV"
+    case "$current_route" in
+      usque|warp)
+        if route_probe "$current_route"; then
+          if [ "$fail_count" -gt 0 ]; then
+            echo "[warp] $current_route recovered after $fail_count failed probe(s)"
+          elif [ "$last_ok" != "$current_route" ]; then
+            echo "[warp] $current_route availability probe succeeded"
+          fi
+          fail_count=0
+          last_ok="$current_route"
+        else
+          fail_count=$((fail_count + 1))
+          if [ "$fail_count" -lt "$WARP_FAIL_THRESHOLD" ]; then
+            echo "[warp] $current_route probe failed ($fail_count/$WARP_FAIL_THRESHOLD)"
+            if [ "$WARP_FAIL_RECHECK_INTERVAL" -lt "$sleep_for" ]; then
+              sleep_for="$WARP_FAIL_RECHECK_INTERVAL"
+            fi
+          else
+            echo "[warp] $current_route failed $fail_count probes in a row; failing over"
+            fail_count=0
+            last_ok=""
+            if try_warp_egress "$current_route"; then
+              current_route="$(cat "$WARP_ROUTE_STATE_FILE" 2>/dev/null || true)"
+              echo "[warp] now using $current_route"
+              last_ok="$current_route"
+              backoff="$WARP_PROBE_INTERVAL_ENV"
+            else
+              stop_usque
+              set_route_outbound "direct" || true
+              now="$(date +%s)"
+              next_retry=$((now + backoff))
+              echo "[warp] no WARP egress available; using direct, next attempt in ${backoff}s"
+            fi
+          fi
+        fi
+        ;;
+      *)
+        now="$(date +%s)"
+        if [ "$now" -ge "$next_retry" ]; then
+          if try_warp_egress; then
+            current_route="$(cat "$WARP_ROUTE_STATE_FILE" 2>/dev/null || true)"
+            echo "[warp] recovered; now using $current_route"
+            last_ok="$current_route"
+            backoff="$WARP_PROBE_INTERVAL_ENV"
+          else
+            stop_usque
+            backoff=$((backoff * 2))
+            if [ "$backoff" -gt "$WARP_RETRY_MAX_INTERVAL" ]; then
+              backoff="$WARP_RETRY_MAX_INTERVAL"
+            fi
+            if [ "$backoff" -lt "$WARP_PROBE_INTERVAL_ENV" ]; then
+              backoff="$WARP_PROBE_INTERVAL_ENV"
+            fi
+            next_retry=$((now + backoff))
+            echo "[warp] still unavailable; next attempt in ${backoff}s"
+          fi
+        fi
+        ;;
+    esac
+    sleep "$sleep_for"
   done
 }
 
@@ -690,35 +813,18 @@ case "$WARP_MODE_ENV" in
   direct)
     echo "[warp] mode=direct"
     ;;
-  usque)
-    if start_usque && usque_probe_once; then
-      set_route_outbound "usque"
+  *)
+    if try_warp_egress; then
+      echo "[warp] using $(cat "$WARP_ROUTE_STATE_FILE")"
     else
       stop_usque
-      echo "[warp] usque unavailable; using direct"
-    fi
-    ;;
-  wireguard)
-    if warp_probe_once; then
-      set_route_outbound "warp"
-    else
-      echo "[warp] WireGuard unavailable; using direct"
-    fi
-    ;;
-  auto)
-    if start_usque && usque_probe_once; then
-      set_route_outbound "usque"
-    elif warp_probe_once; then
-      stop_usque
-      set_route_outbound "warp"
-    else
-      stop_usque
-      echo "[warp] usque and WireGuard unavailable; using direct"
+      echo "[warp] no WARP egress available (mode=$WARP_MODE_ENV); using direct"
     fi
     ;;
 esac
 
-if [ "$WARP_AUTORECOVER_ENV" = "true" ]; then
+# direct mode has nothing to recover, so the monitor would only spin.
+if [ "$WARP_AUTORECOVER_ENV" = "true" ] && [ "$WARP_MODE_ENV" != "direct" ]; then
   warp_monitor_loop &
   WARP_MONITOR_PID="$!"
 fi
