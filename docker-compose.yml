@@ -14,6 +14,8 @@ services:
     #     WGCF_VERSION: ""
     container_name: singbox-warp
     restart: unless-stopped
+    # tini 作为 PID 1：转发停止信号并回收僵尸进程
+    init: true
     ports:
       # 注意：Compose 不会根据 ENABLE_HY2/ENABLE_VLESS 自动删除端口映射；
       # 关闭协议时请手动移除对应端口，交互脚本生成的 Compose 会自动处理。

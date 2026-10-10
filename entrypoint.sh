@@ -37,11 +37,13 @@ STOP_REQUESTED="false"
 PROCESS_CHECK_INTERVAL_SECONDS=10
 WARP_MONITOR_PID=""
 WARP_ROUTE_STATE_FILE="/run/warp-route.state"
-WARP_PROBE_CONFIG="/run/warp-probe.json"
 WARP_PROBE_PORT=18080
 USQUE_PORT=18081
 USQUE_CONFIG="${WGCF_DIR}/usque-config.json"
-USQUE_PID=""
+USQUE_PID_FILE="/run/usque.pid"
+CREDENTIALS_FILE="${WGCF_DIR}/credentials.env"
+HY2_PORT_HOPPING_ENV="${HY2_PORT_HOPPING:-false}"
+HY2_HOP_PORTS_ENV="${HY2_HOP_PORTS:-}"
 WARP_PROBE_URLS=(
   "https://api.ipify.org"
   "https://www.cloudflare.com/cdn-cgi/trace"
@@ -197,13 +199,32 @@ stop_singbox() {
   rm -f "$SINGBOX_PID_FILE"
 }
 
+usque_pid() {
+  cat "$USQUE_PID_FILE" 2>/dev/null || true
+}
+
+usque_running() {
+  local pid
+  pid="$(usque_pid)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# usque may be started by the main shell or by the monitor subshell, so the
+# PID lives in a file instead of a shell variable that only one of them sees.
 stop_usque() {
-  if [ -n "$USQUE_PID" ] && kill -0 "$USQUE_PID" 2>/dev/null; then
+  local pid i
+  pid="$(usque_pid)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     echo "[usque] stopping"
-    kill -TERM "$USQUE_PID" 2>/dev/null || true
-    wait "$USQUE_PID" 2>/dev/null || true
+    kill -TERM "$pid" 2>/dev/null || true
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.5
+    done
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
   fi
-  USQUE_PID=""
+  rm -f "$USQUE_PID_FILE"
 }
 
 handle_signal() {
@@ -236,13 +257,13 @@ start_usque() {
   else
     usque -c "$USQUE_CONFIG" socks -b 127.0.0.1 -p "$USQUE_PORT" >/run/usque.log 2>&1 &
   fi
-  USQUE_PID="$!"
+  printf '%s\n' "$!" > "$USQUE_PID_FILE"
   sleep 1
-  kill -0 "$USQUE_PID" 2>/dev/null
+  usque_running
 }
 
 usque_probe_once() {
-  [ -n "$USQUE_PID" ] && kill -0 "$USQUE_PID" 2>/dev/null || return 1
+  usque_running || return 1
   local probe_url
   for probe_url in "${WARP_PROBE_URLS[@]}"; do
     if curl -fsS --connect-timeout 2 --max-time 5 \
@@ -273,7 +294,10 @@ set_route_outbound() {
   local tmp_config
   tmp_config="$(mktemp)"
   if ! jq --arg outbound "$outbound" \
-    '.route.rules = [{"action":"route","outbound":$outbound}]' \
+    '.route.rules = [
+       {"inbound":["warp-probe"],"action":"route","outbound":"warp"},
+       {"action":"route","outbound":$outbound}
+     ]' \
     "$SB_CONFIG" > "$tmp_config"; then
     rm -f "$tmp_config"
     echo "[warp] failed to prepare $outbound route; keeping $current"
@@ -292,38 +316,23 @@ set_route_outbound() {
   fi
 }
 
+# Probe WARP through the running sing-box via a loopback-only inbound that is
+# always routed to the warp endpoint. Starting a second sing-box with the same
+# WireGuard key would open a competing session and could drop the live one.
 warp_probe_once() {
-  local probe_log probe_pid ready=0 i probe_url
-  probe_log="$(mktemp)"
-  jq --argjson port "$WARP_PROBE_PORT" \
-    '.inbounds = [{"type":"mixed","tag":"warp-probe","listen":"127.0.0.1","listen_port":$port}] |
-     .route.rules = [{"action":"route","outbound":"warp"}] |
-     .log.level = "error"' \
-    "$SB_CONFIG" > "$WARP_PROBE_CONFIG" 2>/dev/null || {
-      rm -f "$probe_log" "$WARP_PROBE_CONFIG"
-      return 1
-    }
-
-  sing-box run -c "$WARP_PROBE_CONFIG" >"$probe_log" 2>&1 &
-  probe_pid="$!"
+  local i probe_url
+  [ -n "$SINGBOX_PID" ] && kill -0 "$SINGBOX_PID" 2>/dev/null || return 1
   for i in 1 2 3; do
-    if ! kill -0 "$probe_pid" 2>/dev/null; then
-      break
-    fi
     for probe_url in "${WARP_PROBE_URLS[@]}"; do
       if curl -fsS --connect-timeout 2 --max-time 4 \
         --proxy "socks5h://127.0.0.1:${WARP_PROBE_PORT}" \
         "$probe_url" >/dev/null 2>&1; then
-        ready=1
-        break 2
+        return 0
       fi
     done
     sleep 1
   done
-  kill -TERM "$probe_pid" 2>/dev/null || true
-  wait "$probe_pid" 2>/dev/null || true
-  rm -f "$probe_log" "$WARP_PROBE_CONFIG"
-  [ "$ready" -eq 1 ]
+  return 1
 }
 
 warp_monitor_loop() {
@@ -337,7 +346,7 @@ warp_monitor_loop() {
       fi
       set_route_outbound "usque" || true
     elif [ "$current_route" = "warp" ] && warp_probe_once; then
-      if [ "$last_result" != "available" ]; then
+      if [ "$last_result" != "warp" ]; then
         echo "[warp] WireGuard availability probe succeeded"
         last_result="warp"
       fi
@@ -417,6 +426,16 @@ validate_required_config() {
     validate_port "SS_PORT" "$SS_PORT_ENV"
   fi
   validate_port "MIXED_PORT" "$MIXED_PORT_ENV"
+  local internal_port
+  for internal_port in "$WARP_PROBE_PORT" "$USQUE_PORT"; do
+    if [ "$MIXED_PORT_ENV" = "$internal_port" ] ||
+       { [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$VLESS_PORT_ENV" = "$internal_port" ]; } ||
+       { [ "$ENABLE_ANYTLS_ENV" = "true" ] && [ "$ANYTLS_PORT_ENV" = "$internal_port" ]; } ||
+       { [ "$ENABLE_SS_ENV" = "true" ] && [ "$SS_PORT_ENV" = "$internal_port" ]; }; then
+      echo "[config] port $internal_port is reserved for internal WARP probing"
+      exit 1
+    fi
+  done
 
   if { [ "$ENABLE_HY2_ENV" = "true" ] && [ "$MIXED_PORT_ENV" = "$HY2_PORT_ENV" ]; } ||
      { [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$MIXED_PORT_ENV" = "$VLESS_PORT_ENV" ]; } ||
@@ -461,6 +480,8 @@ validate_required_config() {
     fi
   fi
 }
+
+trap handle_signal TERM INT HUP
 
 mkdir -p "$WGCF_DIR" /etc/sing-box
 cd "$WGCF_DIR"
@@ -509,8 +530,32 @@ fi
 
 cp "$SB_TEMPLATE" "$SB_CONFIG"
 
+load_persisted_credential() {
+  local key="$1"
+  [ -f "$CREDENTIALS_FILE" ] || return 0
+  sed -n "s/^${key}=//p" "$CREDENTIALS_FILE" | head -n1
+}
+
+save_persisted_credential() {
+  local key="$1" value="$2" tmp
+  tmp="$(mktemp "${CREDENTIALS_FILE}.XXXXXX")"
+  if [ -f "$CREDENTIALS_FILE" ]; then
+    grep -v "^${key}=" "$CREDENTIALS_FILE" > "$tmp" || true
+  fi
+  printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$CREDENTIALS_FILE"
+}
+
+# Values left empty are generated once and kept in the data volume, so a
+# container restart does not rotate them and break existing clients.
 if [ -z "$AUTH_UUID_ENV" ]; then
-  AUTH_UUID_ENV="$(cat /proc/sys/kernel/random/uuid)"
+  AUTH_UUID_ENV="$(load_persisted_credential AUTH_UUID)"
+  if [ -z "$AUTH_UUID_ENV" ]; then
+    AUTH_UUID_ENV="$(cat /proc/sys/kernel/random/uuid)"
+    save_persisted_credential AUTH_UUID "$AUTH_UUID_ENV"
+    echo "[auth] generated AUTH_UUID and saved it to $CREDENTIALS_FILE"
+  fi
 fi
 if [ -z "$HY2_PASSWORD_ENV" ]; then
   HY2_PASSWORD_ENV="$AUTH_UUID_ENV"
@@ -522,7 +567,12 @@ if [ -z "$ANYTLS_PASSWORD_ENV" ]; then
   ANYTLS_PASSWORD_ENV="$AUTH_UUID_ENV"
 fi
 if [ -z "$SS_PASSWORD_ENV" ]; then
-  SS_PASSWORD_ENV="$(openssl rand -base64 32 | tr -d '\r\n')"
+  SS_PASSWORD_ENV="$(load_persisted_credential SS_PASSWORD)"
+  if [ -z "$SS_PASSWORD_ENV" ]; then
+    SS_PASSWORD_ENV="$(openssl rand -base64 32 | tr -d '\r\n')"
+    save_persisted_credential SS_PASSWORD "$SS_PASSWORD_ENV"
+    echo "[auth] generated SS_PASSWORD and saved it to $CREDENTIALS_FILE"
+  fi
 fi
 
 NODE_NAME_EFFECTIVE="$NODE_NAME_ENV"
@@ -602,15 +652,37 @@ jq empty "$SB_CONFIG" >/dev/null
 cp "$SB_CONFIG" "${SB_CONFIG}.pre-warp-fallback" 2>/dev/null || true
 set_route_outbound "direct"
 
-HY2_TAG="$(jq -r '.inbounds[] | select(.type=="hysteria2") | .tag // "hy2"' "$SB_CONFIG" | head -n1)"
-VLESS_TAG="$(jq -r '.inbounds[] | select(.type=="vless") | .tag // "vless"' "$SB_CONFIG" | head -n1)"
+uri_encode() {
+  jq -rn --arg v "$1" '$v|@uri'
+}
 
-if [[ -n "$HY2_TAG" ]]; then
-  echo "[node] hysteria2 ready: $HY2_TAG"
-fi
-if [[ -n "$VLESS_TAG" ]]; then
-  echo "[node] vless ready: $VLESS_TAG"
-fi
+print_node_links() {
+  local cfg="$SB_CONFIG" host="$TLS_DOMAIN_ENV" tag port link userinfo method
+  if [ "$ENABLE_HY2_ENV" = "true" ]; then
+    tag="$(jq -r '.inbounds[] | select(.type=="hysteria2") | .tag' "$cfg" | head -n1)"
+    link="hy2://$(uri_encode "$HY2_PASSWORD_ENV")@${host}:${HY2_PORT_ENV}?sni=${host}"
+    if [ "$HY2_PORT_HOPPING_ENV" = "true" ] && [ -n "$HY2_HOP_PORTS_ENV" ]; then
+      link="${link}&mport=${HY2_HOP_PORTS_ENV}"
+    fi
+    echo "[node] ${link}&insecure=0#$(uri_encode "$tag")"
+  fi
+  if [ "$ENABLE_VLESS_ENV" = "true" ]; then
+    tag="$(jq -r '.inbounds[] | select(.type=="vless") | .tag' "$cfg" | head -n1)"
+    echo "[node] vless://${VLESS_UUID_ENV}@${host}:${VLESS_PORT_ENV}?encryption=none&security=tls&sni=${host}&type=tcp&flow=xtls-rprx-vision#$(uri_encode "$tag")"
+  fi
+  if [ "$ENABLE_ANYTLS_ENV" = "true" ]; then
+    tag="$(jq -r '.inbounds[] | select(.type=="anytls") | .tag' "$cfg" | head -n1)"
+    echo "[node] anytls://$(uri_encode "$ANYTLS_PASSWORD_ENV")@${host}:${ANYTLS_PORT_ENV}/?sni=${host}#$(uri_encode "$tag")"
+  fi
+  if [ "$ENABLE_SS_ENV" = "true" ]; then
+    tag="$(jq -r '.inbounds[] | select(.type=="shadowsocks") | .tag' "$cfg" | head -n1)"
+    method="$(jq -r '.inbounds[] | select(.type=="shadowsocks") | .method' "$cfg" | head -n1)"
+    userinfo="$(printf '%s:%s' "$method" "$SS_PASSWORD_ENV" | base64 -w0)"
+    echo "[node] ss://${userinfo}@${host}:${SS_PORT_ENV}#$(uri_encode "$tag")"
+  fi
+}
+
+print_node_links
 
 start_singbox
 
@@ -651,8 +723,6 @@ if [ "$WARP_AUTORECOVER_ENV" = "true" ]; then
   WARP_MONITOR_PID="$!"
 fi
 
-trap handle_signal TERM INT HUP
-
 elapsed_seconds=0
 while true; do
   if [ "$STOP_REQUESTED" = "true" ]; then
@@ -665,7 +735,10 @@ while true; do
     exit 1
   fi
 
-  sleep "$PROCESS_CHECK_INTERVAL_SECONDS"
+  # Background sleep + wait so a stop signal is handled at once instead of
+  # after the sleep finishes.
+  sleep "$PROCESS_CHECK_INTERVAL_SECONDS" &
+  wait "$!" || true
   elapsed_seconds=$((elapsed_seconds + PROCESS_CHECK_INTERVAL_SECONDS))
   if [ "$elapsed_seconds" -ge "$TLS_RENEW_INTERVAL_ENV" ]; then
     elapsed_seconds=0

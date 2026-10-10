@@ -237,6 +237,8 @@ Default behavior:
 
 - If `AUTH_UUID` / `HY2_PASSWORD` / `VLESS_UUID` are not provided, one UUID is generated at startup
 - The generated UUID is used for both `hy2 password` and `vless uuid`
+- Generated `AUTH_UUID` / `SS_PASSWORD` values are saved to `./data/credentials.env` and survive restarts; delete that file to regenerate them
+- The startup log prints node links for each enabled protocol (`[node] hy2://...`)
 - If `./data/wgcf-account.toml` is not provided, the container auto-registers WARP on first start
 - If `WARP_LICENSE_KEY` is provided, startup attempts to apply the WARP+ license and regenerate the profile
 

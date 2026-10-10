@@ -261,6 +261,8 @@ CF_Zone_ID=
 
 - 如果没有填写 `AUTH_UUID` / `HY2_PASSWORD` / `VLESS_UUID`，启动时会自动生成一个 UUID
 - 默认自动生成的 UUID 会同时用于 `hy2 password` 和 `vless uuid`
+- 自动生成的 `AUTH_UUID` / `SS_PASSWORD` 会保存到 `./data/credentials.env`，容器重启后保持不变；删除该文件才会重新生成
+- 启动日志会打印各协议的节点链接（`[node] hy2://...` 等）
 - 如果没有提供 `./data/wgcf-account.toml`，容器首次启动会自动注册 WARP
 - 如果填写了 `WARP_LICENSE_KEY`，启动时会自动尝试更新到对应的 WARP+ 许可证并重建 profile
 

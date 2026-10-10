@@ -67,6 +67,12 @@
     },
     {
       "type": "mixed",
+      "tag": "warp-probe",
+      "listen": "127.0.0.1",
+      "listen_port": 18080
+    },
+    {
+      "type": "mixed",
       "tag": "mixed-in",
       "listen": "0.0.0.0",
       "listen_port": __MIXED_PORT__
@@ -111,6 +117,11 @@
   "route": {
     "auto_detect_interface": true,
     "rules": [
+      {
+        "inbound": ["warp-probe"],
+        "action": "route",
+        "outbound": "warp"
+      },
       {
         "action": "route",
         "outbound": "direct"

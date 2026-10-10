@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.2.0"
+SCRIPT_VERSION="2.2.1"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -1136,6 +1136,7 @@ services:
     image: ${IMAGE}
     container_name: singbox-warp
     restart: unless-stopped
+    init: true
     ports:
 ${ports_block}
     volumes:
