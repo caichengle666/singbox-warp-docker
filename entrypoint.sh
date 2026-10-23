@@ -33,6 +33,8 @@ ANYTLS_PASSWORD_ENV="${ANYTLS_PASSWORD:-}"
 SS_PASSWORD_ENV="${SS_PASSWORD:-}"
 NODE_NAME_ENV="${NODE_NAME:-}"
 SINGBOX_PID=""
+MANUAL_CERT_SUM=""
+MANUAL_CERT_CHECK_INTERVAL=60
 STOP_REQUESTED="false"
 PROCESS_CHECK_INTERVAL_SECONDS=10
 WARP_MONITOR_PID=""
@@ -171,6 +173,25 @@ ensure_tls_cert() {
       echo "[tls] cert updated during startup renewal check"
     fi
   fi
+}
+
+cert_checksum() {
+  sha256sum "$TLS_CERT_PATH_ENV" "$TLS_KEY_PATH_ENV" 2>/dev/null | sha256sum | awk '{print $1}'
+}
+
+# Manual TLS: reload sing-box when the mounted cert/key files are replaced.
+reload_manual_cert_if_changed() {
+  local current
+  [ "$AUTO_TLS_ENV" = "true" ] && return 0
+  [ -s "$TLS_CERT_PATH_ENV" ] && [ -s "$TLS_KEY_PATH_ENV" ] || return 0
+  current="$(cert_checksum)"
+  if [ -n "$MANUAL_CERT_SUM" ] && [ "$current" != "$MANUAL_CERT_SUM" ]; then
+    echo "[tls] manual cert changed, reloading sing-box"
+    if [ -n "$SINGBOX_PID" ] && kill -0 "$SINGBOX_PID" 2>/dev/null; then
+      kill -HUP "$SINGBOX_PID" || true
+    fi
+  fi
+  MANUAL_CERT_SUM="$current"
 }
 
 renew_tls_cert_if_needed() {
@@ -369,19 +390,16 @@ set_route_outbound() {
 
   local tmp_config
   tmp_config="$(mktemp)"
-  if ! jq --arg outbound "$outbound" \
-    '.route.rules = [
-       {"inbound":["warp-probe"],"action":"route","outbound":"warp"},
-       {"action":"route","outbound":$outbound}
-     ]' \
+  # Only route.final changes; the warp-probe and private-address rules stay.
+  if ! jq --arg outbound "$outbound" '.route.final = $outbound' \
     "$SB_CONFIG" > "$tmp_config"; then
     rm -f "$tmp_config"
     echo "[warp] failed to prepare $outbound route; keeping $current"
     return 1
   fi
-  if ! jq empty "$tmp_config" >/dev/null; then
+  if ! sing-box check -c "$tmp_config" >/dev/null 2>&1; then
     rm -f "$tmp_config"
-    echo "[warp] generated $outbound route is invalid; keeping $current"
+    echo "[warp] generated $outbound route failed sing-box check; keeping $current"
     return 1
   fi
   mv "$tmp_config" "$SB_CONFIG"
@@ -536,18 +554,11 @@ validate_required_config() {
   fi
   validate_positive_integer "TLS_ISSUE_RETRIES" "$TLS_ISSUE_RETRIES_ENV"
   validate_positive_integer "TLS_RENEW_INTERVAL" "$TLS_RENEW_INTERVAL_ENV"
-  if [ "$ENABLE_HY2_ENV" = "true" ]; then
-    validate_port "HY2_PORT" "$HY2_PORT_ENV"
-  fi
-  if [ "$ENABLE_VLESS_ENV" = "true" ]; then
-    validate_port "VLESS_PORT" "$VLESS_PORT_ENV"
-  fi
-  if [ "$ENABLE_ANYTLS_ENV" = "true" ]; then
-    validate_port "ANYTLS_PORT" "$ANYTLS_PORT_ENV"
-  fi
-  if [ "$ENABLE_SS_ENV" = "true" ]; then
-    validate_port "SS_PORT" "$SS_PORT_ENV"
-  fi
+  # Every port is substituted into the template, even for disabled inbounds.
+  validate_port "HY2_PORT" "$HY2_PORT_ENV"
+  validate_port "VLESS_PORT" "$VLESS_PORT_ENV"
+  validate_port "ANYTLS_PORT" "$ANYTLS_PORT_ENV"
+  validate_port "SS_PORT" "$SS_PORT_ENV"
   validate_port "MIXED_PORT" "$MIXED_PORT_ENV"
   local internal_port
   for internal_port in "$WARP_PROBE_PORT" "$USQUE_PORT"; do
@@ -606,6 +617,10 @@ validate_required_config() {
 
 trap handle_signal TERM INT HUP
 
+# /run survives `docker restart`; a stale PID file could make stop_usque signal
+# an unrelated process, and a stale route state could skip the startup reset.
+rm -f "$USQUE_PID_FILE" "$WARP_ROUTE_STATE_FILE" "$SINGBOX_PID_FILE"
+
 mkdir -p "$WGCF_DIR" /etc/sing-box
 cd "$WGCF_DIR"
 validate_required_config
@@ -620,7 +635,8 @@ fi
 
 PROFILE_NEEDS_REGEN="false"
 if [ -n "$WARP_LICENSE_KEY_ENV" ]; then
-  current_warp_license_key="$(awk -F' = ' '/^license_key/{print $2}' "$WGCF_DIR/wgcf-account.toml" | tr -d '"[:space:]' | head -n1)"
+  # wgcf writes TOML string values in single quotes (license_key = 'xxx').
+  current_warp_license_key="$(awk -F' = ' '/^license_key/{print $2}' "$WGCF_DIR/wgcf-account.toml" | tr -d "\"'[:space:]" | head -n1)"
   if [ "$current_warp_license_key" != "$WARP_LICENSE_KEY_ENV" ]; then
     echo "[warp] applying WARP license key update"
     retry_command warp-license wgcf update --license-key "$WARP_LICENSE_KEY_ENV"
@@ -771,6 +787,10 @@ jq \
 mv "$tmp_config" "$SB_CONFIG"
 
 jq empty "$SB_CONFIG" >/dev/null
+if ! sing-box check -c "$SB_CONFIG"; then
+  echo "[config] rendered sing-box config failed sing-box check"
+  exit 1
+fi
 
 cp "$SB_CONFIG" "${SB_CONFIG}.pre-warp-fallback" 2>/dev/null || true
 set_route_outbound "direct"
@@ -807,6 +827,7 @@ print_node_links() {
 
 print_node_links
 
+reload_manual_cert_if_changed
 start_singbox
 
 case "$WARP_MODE_ENV" in
@@ -846,6 +867,9 @@ while true; do
   sleep "$PROCESS_CHECK_INTERVAL_SECONDS" &
   wait "$!" || true
   elapsed_seconds=$((elapsed_seconds + PROCESS_CHECK_INTERVAL_SECONDS))
+  if [ $((elapsed_seconds % MANUAL_CERT_CHECK_INTERVAL)) -lt "$PROCESS_CHECK_INTERVAL_SECONDS" ]; then
+    reload_manual_cert_if_changed
+  fi
   if [ "$elapsed_seconds" -ge "$TLS_RENEW_INTERVAL_ENV" ]; then
     elapsed_seconds=0
     renew_tls_cert_if_needed

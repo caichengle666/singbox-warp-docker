@@ -309,7 +309,7 @@ curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/m
 
 说明：
 
-- 当前管理脚本版本：`2.1.0`；运行 `swd --version` 可查看线上版本
+- 当前管理脚本版本：`2.2.3`；运行 `swd --version` 可查看线上版本
 - 普通用户运行时会自动请求 `sudo` 权限并以 root 重新启动；`--help` 和 `--version` 不需要提权
 - 脚本只提供交互模式（执行后逐项提示输入）
 - 菜单提供安装、镜像/管理脚本更新、配置修改、节点二维码、状态总览、诊断、日志、重启、备份恢复、自动更新、回滚和卸载
@@ -349,119 +349,28 @@ chmod +x ./deploy.sh
 
 ## 配置模板说明
 
-使用文件：`config/sing-box.template.json`
+使用文件：`config/sing-box.template.json`（以该文件为准，这里只讲结构）。
 
-这是一份模板，不是最终运行文件。启动时脚本会自动注入：
+这是一份模板，不是最终运行文件。启动时脚本会自动注入端口、密码/UUID、TLS 证书路径与域名、WARP WireGuard 参数和 `MIXED` 端口，并删除未启用的入站，渲染后先跑一遍 `sing-box check`。
 
-- HY2 端口 / 密码
-- VLESS 端口 / UUID
-- TLS 证书路径与域名
-- WARP 出站参数
-- `MIXED` 入站端口
+- 入站：HY2、VLESS、AnyTLS、Shadowsocks 2022（按 `ENABLE_*` 保留），`mixed-in`（宿主机本地代理），以及仅容器内使用的 `warp-probe`（127.0.0.1:18080，用于探测 WARP）
+- 出站：`warp`（WireGuard endpoint）、`usque`（MASQUE SOCKS，127.0.0.1:18081）、`direct`
+- 路由规则：
+  1. `warp-probe` 固定走 `warp`
+  2. 目标是私有/内网地址（含 `169.254.169.254` 云元数据、容器回环）的连接直接拒绝，避免节点被用来访问服务器内网
+  3. 其余流量走 `route.final`，由启动脚本在 `usque` / `warp` / `direct` 之间切换
 
-模板里 3 个 inbound 的关系：
-
-| 类型 | 用途 | 客户端 |
-|---|---|---|
-| `hysteria2` | 外部节点出站 | HY2 客户端（自用或分享） |
-| `vless` | 外部节点出站 | v2rayN/Nekoray 等（自用或分享） |
-| `mixed` | **本地 HTTP+SOCKS5 代理** | 宿主机工具 |
-
-`mixed` 不需要密码/TLS；容器内监听 `0.0.0.0:1080`，但 Docker 只映射到宿主机 `127.0.0.1:1080`，流量走当前生效的出口（WARP 可用时为 WARP，否则为 direct）。
-
-你主要需要关注：
-
-- 模板结构本身是否符合你的协议需求
-- 是否需要额外自定义路由规则
-
-模板示例：
-
-```json
-{
-  "log": {
-    "level": "info"
-  },
-  "inbounds": [
-    {
-      "type": "hysteria2",
-      "tag": "hy2-in",
-      "listen": "::",
-      "listen_port": __HY2_PORT__,
-      "users": [
-        {
-          "password": "__HY2_PASSWORD__"
-        }
-      ],
-      "tls": {
-        "enabled": true,
-        "server_name": "__TLS_DOMAIN__",
-        "certificate_path": "__TLS_CERT_PATH__",
-        "key_path": "__TLS_KEY_PATH__"
-      }
-    },
-    {
-      "type": "vless",
-      "tag": "vless-in",
-      "listen": "::",
-      "listen_port": __VLESS_PORT__,
-      "users": [
-        {
-          "uuid": "__VLESS_UUID__"
-        }
-      ],
-      "tls": {
-        "enabled": true,
-        "server_name": "__TLS_DOMAIN__",
-        "certificate_path": "__TLS_CERT_PATH__",
-        "key_path": "__TLS_KEY_PATH__"
-      }
-    },
-    {
-      "type": "mixed",
-      "tag": "mixed-in",
-      "listen": "0.0.0.0",
-      "listen_port": __MIXED_PORT__
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "wireguard",
-      "tag": "warp",
-      "server": "__WARP_PEER_HOST__",
-      "server_port": __WARP_PEER_PORT__,
-      "local_address": [
-        "__WARP_ADDRESS_V4__",
-        "__WARP_ADDRESS_V6__"
-      ],
-      "private_key": "__WARP_PRIVATE_KEY__",
-      "peer_public_key": "__WARP_PEER_PUBLIC_KEY__",
-      "reserved": [0, 0, 0],
-      "mtu": 1280
-    },
-    {
-      "type": "direct",
-      "tag": "direct"
-    },
-    {
-      "type": "block",
-      "tag": "block"
-    }
-  ],
-  "route": {
-    "auto_detect_interface": true,
-    "final": "warp"
-  }
-}
-```
+如需自定义规则，请加在第 2 条之后，并保持 `route.final` 由脚本管理。
 
 ## GitHub 构建
 
-- Workflow 在 `push`、手动触发和定时任务时检查版本
-- 只有 `sing-box` 或 `wgcf` 版本变化时才构建
+- Workflow 在 `push`、手动触发和每日定时任务时运行
+- 每次都会用最新 `sing-box` 对渲染后的模板跑 `sing-box check`，不通过就不会构建和推送
+- `push` 时只有代码/配置改动才构建；定时任务只有 `sing-box` 或 `wgcf` 出新版时才构建
 - 镜像推送到 `ghcr.io/<owner>/singbox-warp-docker`
 
 ## 安全说明
 
 - 不要把私钥、证书、`.env` 直接提交进仓库
 - 使用自动 TLS 时，`CF_Token` 只给最小权限
-- 当前管理脚本版本：`2.1.0`；运行 `swd --version` 可查看线上版本
+- 当前管理脚本版本：`2.2.3`；运行 `swd --version` 可查看线上版本

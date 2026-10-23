@@ -37,8 +37,6 @@ services:
       - ./certs:/etc/sing-box/certs
       # acme.sh 数据目录（AUTO_TLS=true 时使用）
       - ./acme:/var/lib/acme
-    cap_add:
-      - NET_ADMIN
     security_opt:
       - no-new-privileges:true
     mem_limit: 512m

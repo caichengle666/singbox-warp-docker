@@ -53,34 +53,8 @@ jobs:
               - 'docker-compose.yml'
               - '.env.example'
               - 'config/**'
+              - 'scripts/**'
               - '.github/workflows/build.yml'
-
-      - name: Validate sing-box template
-        run: |
-          set -euo pipefail
-          test -f config/sing-box.template.json
-          rendered="$(cat config/sing-box.template.json)"
-          rendered="${rendered//__HY2_PORT__/32443}"
-          rendered="${rendered//__VLESS_PORT__/38443}"
-          rendered="${rendered//__ANYTLS_PORT__/4443}"
-          rendered="${rendered//__SS_PORT__/48443}"
-          rendered="${rendered//__HY2_TAG__/hy2-test}"
-          rendered="${rendered//__VLESS_TAG__/vless-test}"
-          rendered="${rendered//__HY2_PASSWORD__/dummy_hy2_password}"
-          rendered="${rendered//__VLESS_UUID__/11111111-1111-1111-1111-111111111111}"
-          rendered="${rendered//__ANYTLS_PASSWORD__/dummy_anytls_password}"
-          rendered="${rendered//__SS_PASSWORD__/dummy_ss_password}"
-          rendered="${rendered//__TLS_DOMAIN__/example.com}"
-          rendered="${rendered//__TLS_CERT_PATH__/\/etc\/sing-box\/certs\/fullchain.pem}"
-          rendered="${rendered//__TLS_KEY_PATH__/\/etc\/sing-box\/certs\/privkey.pem}"
-          rendered="${rendered//__WARP_PEER_PORT__/2408}"
-          rendered="${rendered//__WARP_PEER_HOST__/engage.cloudflareclient.com}"
-          rendered="${rendered//__WARP_ADDRESS_V4__/172.16.0.2/32}"
-          rendered="${rendered//__WARP_ADDRESS_V6__/2606:4700:110:8765::2/128}"
-          rendered="${rendered//__WARP_PRIVATE_KEY__/dummy_private_key}"
-          rendered="${rendered//__WARP_PEER_PUBLIC_KEY__/dummy_peer_public_key}"
-          rendered="${rendered//__MIXED_PORT__/1080}"
-          echo "$rendered" | jq empty
 
       - name: Resolve latest versions
         id: versions
@@ -90,6 +64,14 @@ jobs:
           WGCF_VERSION=$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -r .tag_name | sed 's/^v//')
           echo "singbox=$SINGBOX_VERSION" >> "$GITHUB_OUTPUT"
           echo "wgcf=$WGCF_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Validate sing-box template with sing-box check
+        run: |
+          set -euo pipefail
+          version="${{ steps.versions.outputs.singbox }}"
+          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${version}/sing-box-${version}-linux-amd64.tar.gz" -o /tmp/sb.tgz
+          tar -xzf /tmp/sb.tgz -C /tmp
+          bash scripts/check-template.sh "/tmp/sing-box-${version}-linux-amd64/sing-box"
 
       - name: Login to GHCR
         uses: docker/login-action@v4

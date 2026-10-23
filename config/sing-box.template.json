@@ -123,9 +123,10 @@
         "outbound": "warp"
       },
       {
-        "action": "route",
-        "outbound": "direct"
+        "ip_is_private": true,
+        "action": "reject"
       }
-    ]
+    ],
+    "final": "direct"
   }
 }

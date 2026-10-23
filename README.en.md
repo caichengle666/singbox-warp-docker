@@ -292,115 +292,24 @@ What this interactive script does:
 
 ## Template Notes
 
-File used: `config/sing-box.template.json`
+File used: `config/sing-box.template.json` (the file is authoritative; this section only describes its shape).
 
-This is a template, not the final runtime config. On startup the script injects:
+This is a template, not the final runtime config. On startup the script injects ports, passwords/UUIDs, TLS paths and server name, WARP WireGuard parameters and the `MIXED` port, drops disabled inbounds, and runs `sing-box check` on the result.
 
-- HY2 port / password
-- VLESS port / UUID
-- TLS certificate path and server name
-- WARP outbound parameters
-- `MIXED` inbound port
+- Inbounds: HY2, VLESS, AnyTLS, Shadowsocks 2022 (kept per `ENABLE_*`), `mixed-in` (host-local proxy), and the container-internal `warp-probe` (127.0.0.1:18080, used to probe WARP)
+- Outbounds: `warp` (WireGuard endpoint), `usque` (MASQUE SOCKS on 127.0.0.1:18081), `direct`
+- Route rules:
+  1. `warp-probe` always goes to `warp`
+  2. Connections to private/internal addresses (including the `169.254.169.254` cloud metadata service and container loopback) are rejected, so a node cannot be used to reach the server's internal network
+  3. Everything else uses `route.final`, which the entrypoint switches between `usque` / `warp` / `direct`
 
-Relationship between the 3 inbounds in the template:
-
-| Type | Purpose | Client |
-|---|---|---|
-| `hysteria2` | External node egress | HY2 client (self-use or share) |
-| `vless` | External node egress | v2rayN/Nekoray etc. (self-use or share) |
-| `mixed` | **Local HTTP+SOCKS5 proxy** | Host tools, Cloudflare Tunnel forwarding |
-
-`mixed` does not need password or TLS — it only listens inside the container (`0.0.0.0:1080`) and traffic uses whichever outbound is active (WARP when available, otherwise direct).
-
-In most cases you mainly need to care about:
-
-- whether the template structure matches your protocol needs
-- whether you want additional custom route rules
-
-Template example:
-
-```json
-{
-  "log": {
-    "level": "info"
-  },
-  "inbounds": [
-    {
-      "type": "hysteria2",
-      "tag": "hy2-in",
-      "listen": "::",
-      "listen_port": __HY2_PORT__,
-      "users": [
-        {
-          "password": "__HY2_PASSWORD__"
-        }
-      ],
-      "tls": {
-        "enabled": true,
-        "server_name": "__TLS_DOMAIN__",
-        "certificate_path": "__TLS_CERT_PATH__",
-        "key_path": "__TLS_KEY_PATH__"
-      }
-    },
-    {
-      "type": "vless",
-      "tag": "vless-in",
-      "listen": "::",
-      "listen_port": __VLESS_PORT__,
-      "users": [
-        {
-          "uuid": "__VLESS_UUID__"
-        }
-      ],
-      "tls": {
-        "enabled": true,
-        "server_name": "__TLS_DOMAIN__",
-        "certificate_path": "__TLS_CERT_PATH__",
-        "key_path": "__TLS_KEY_PATH__"
-      }
-    },
-    {
-      "type": "mixed",
-      "tag": "mixed-in",
-      "listen": "0.0.0.0",
-      "listen_port": __MIXED_PORT__
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "wireguard",
-      "tag": "warp",
-      "server": "__WARP_PEER_HOST__",
-      "server_port": __WARP_PEER_PORT__,
-      "local_address": [
-        "__WARP_ADDRESS_V4__",
-        "__WARP_ADDRESS_V6__"
-      ],
-      "private_key": "__WARP_PRIVATE_KEY__",
-      "peer_public_key": "__WARP_PEER_PUBLIC_KEY__",
-      "reserved": [0, 0, 0],
-      "mtu": 1280
-    },
-    {
-      "type": "direct",
-      "tag": "direct"
-    },
-    {
-      "type": "block",
-      "tag": "block"
-    }
-  ],
-  "route": {
-    "auto_detect_interface": true,
-    "final": "warp"
-  }
-}
-```
+Add custom rules after rule 2 and leave `route.final` to the script.
 
 ## GitHub Build Notes
 
-- The workflow checks versions on `push`, manual trigger, and scheduled runs
-- It only builds when `sing-box` or `wgcf` versions actually change
+- The workflow runs on `push`, manual trigger, and a daily schedule
+- Every run renders the template and runs `sing-box check` with the latest `sing-box`; a failure stops the build and push
+- On `push` it only builds when code/config changed; on schedule it only builds when `sing-box` or `wgcf` has a new release
 - Images are pushed to `ghcr.io/<owner>/singbox-warp-docker`
 
 ## Security Notes
