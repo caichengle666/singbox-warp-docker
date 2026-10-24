@@ -26,7 +26,13 @@ cleanup() {
   if [ "${KEEP_CONTAINER:-false}" != "true" ]; then
     docker rm -f "$NAME" >/dev/null 2>&1 || true
   fi
-  rm -rf "$work"
+  # The container writes data/ as root; remove it from inside a container
+  # when the runner user cannot.
+  if ! rm -rf "$work" 2>/dev/null; then
+    docker run --rm -v "$work:/w" --entrypoint sh "$IMAGE" -c 'rm -rf /w/* /w/.[!.]*' >/dev/null 2>&1 || true
+    rm -rf "$work" 2>/dev/null || true
+  fi
+  return 0
 }
 trap cleanup EXIT
 

@@ -158,29 +158,11 @@ jobs:
             USQUE_VERSION=4.2.1
 
       - name: Runtime test (every protocol end to end)
-        id: runtime
         if: steps.gate.outputs.should_build == 'true'
-        env:
-          KEEP_CONTAINER: "true"
         run: |
           set -euo pipefail
           version="${{ steps.versions.outputs.singbox }}"
-          bash -x scripts/runtime-test.sh singbox-warp-docker:ci-test "/tmp/sing-box-${version}-linux-amd64/sing-box" 2>&1 | tee /tmp/runtime-test.log
-
-      # Temporary: publish the failing log to a ci-debug branch so it can be
-      # read without signing in to the Actions UI.
-      - name: Publish runtime test log (debug)
-        if: failure() && steps.runtime.outcome == 'failure'
-        run: |
-          set -x
-          mkdir -p /tmp/dbg && cd /tmp/dbg
-          cp /tmp/runtime-test.log . || true
-          docker logs swd-runtime-test > container.log 2>&1 || true
-          docker ps -a > ps.txt 2>&1 || true
-          git init -q -b ci-debug
-          git add -A
-          git -c user.name=ci -c user.email=ci@localhost commit -qm "runtime test log ${GITHUB_SHA}"
-          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" ci-debug
+          bash scripts/runtime-test.sh singbox-warp-docker:ci-test "/tmp/sing-box-${version}-linux-amd64/sing-box"
 
       - name: Docker metadata
         if: steps.gate.outputs.should_build == 'true'
