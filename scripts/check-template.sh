@@ -18,13 +18,16 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
 wg_private="$("$SING_BOX" generate wg-keypair | sed -n 's/^PrivateKey: //p')"
 wg_peer_public="$("$SING_BOX" generate wg-keypair | sed -n 's/^PublicKey: //p')"
 ss_password="$("$SING_BOX" generate rand --base64 32)"
-[ -n "$wg_private" ] && [ -n "$wg_peer_public" ] && [ -n "$ss_password" ]
+reality_private="$("$SING_BOX" generate reality-keypair | sed -n 's/^PrivateKey: *//p')"
+[ -n "$wg_private" ] && [ -n "$wg_peer_public" ] && [ -n "$ss_password" ] && [ -n "$reality_private" ]
 
 rendered="$(cat "$template")"
 rendered="${rendered//__HY2_PORT__/32443}"
 rendered="${rendered//__VLESS_PORT__/38443}"
 rendered="${rendered//__ANYTLS_PORT__/4443}"
 rendered="${rendered//__SS_PORT__/48443}"
+rendered="${rendered//__TUIC_PORT__/36443}"
+rendered="${rendered//__REALITY_PORT__/443}"
 rendered="${rendered//__MIXED_PORT__/1080}"
 rendered="${rendered//__HY2_TAG__/hy2-test}"
 rendered="${rendered//__VLESS_TAG__/vless-test}"
@@ -32,6 +35,10 @@ rendered="${rendered//__HY2_PASSWORD__/dummy_hy2_password}"
 rendered="${rendered//__VLESS_UUID__/11111111-1111-1111-1111-111111111111}"
 rendered="${rendered//__ANYTLS_PASSWORD__/dummy_anytls_password}"
 rendered="${rendered//__SS_PASSWORD__/$ss_password}"
+rendered="${rendered//__TUIC_PASSWORD__/dummy_tuic_password}"
+rendered="${rendered//__REALITY_SNI__/www.microsoft.com}"
+rendered="${rendered//__REALITY_PRIVATE_KEY__/$reality_private}"
+rendered="${rendered//__REALITY_SHORT_ID__/0123456789abcdef}"
 rendered="${rendered//__TLS_DOMAIN__/example.com}"
 rendered="${rendered//__TLS_CERT_PATH__/$work/fullchain.pem}"
 rendered="${rendered//__TLS_KEY_PATH__/$work/privkey.pem}"
@@ -58,5 +65,18 @@ for outbound in direct warp usque; do
     "$work/config.json" > "$work/route-$outbound.json"
   "$SING_BOX" check -c "$work/route-$outbound.json"
 done
+
+# WARP_SCOPE=split shape: sniff + rule_set/domain_suffix rules + local rule sets.
+curl -fsSL --retry 2 "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs" \
+  -o "$work/geosite-openai.srs"
+jq --arg ruleset "$work/geosite-openai.srs" '
+  .route.rules += [
+    {"action": "sniff"},
+    {"rule_set": ["geosite-openai"], "action": "route", "outbound": "usque"},
+    {"domain_suffix": ["example.org"], "action": "route", "outbound": "usque"}
+  ] |
+  .route.rule_set = [{"type": "local", "tag": "geosite-openai", "format": "binary", "path": $ruleset}]
+' "$work/config.json" > "$work/split.json"
+"$SING_BOX" check -c "$work/split.json"
 
 echo "sing-box template check passed ($("$SING_BOX" version | head -n1))"

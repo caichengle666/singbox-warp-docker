@@ -66,6 +66,55 @@
       "password": "__SS_PASSWORD__"
     },
     {
+      "type": "vless",
+      "tag": "reality-in",
+      "listen": "::",
+      "listen_port": __REALITY_PORT__,
+      "users": [
+        {
+          "uuid": "__VLESS_UUID__",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "__REALITY_SNI__",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "__REALITY_SNI__",
+            "server_port": 443
+          },
+          "private_key": "__REALITY_PRIVATE_KEY__",
+          "short_id": [
+            "__REALITY_SHORT_ID__"
+          ]
+        }
+      }
+    },
+    {
+      "type": "tuic",
+      "tag": "tuic-in",
+      "listen": "::",
+      "listen_port": __TUIC_PORT__,
+      "users": [
+        {
+          "uuid": "__VLESS_UUID__",
+          "password": "__TUIC_PASSWORD__"
+        }
+      ],
+      "congestion_control": "bbr",
+      "tls": {
+        "enabled": true,
+        "server_name": "__TLS_DOMAIN__",
+        "alpn": [
+          "h3"
+        ],
+        "certificate_path": "__TLS_CERT_PATH__",
+        "key_path": "__TLS_KEY_PATH__"
+      }
+    },
+    {
       "type": "mixed",
       "tag": "warp-probe",
       "listen": "127.0.0.1",

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.2.3"
+SCRIPT_VERSION="2.3.0"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -25,6 +25,16 @@ ENABLE_HY2="${ENABLE_HY2:-true}"
 ENABLE_VLESS="${ENABLE_VLESS:-true}"
 ENABLE_ANYTLS="${ENABLE_ANYTLS:-false}"
 ENABLE_SS="${ENABLE_SS:-false}"
+TUIC_PORT="${TUIC_PORT:-36443}"
+ENABLE_TUIC="${ENABLE_TUIC:-false}"
+REALITY_PORT="${REALITY_PORT:-443}"
+ENABLE_REALITY="${ENABLE_REALITY:-false}"
+REALITY_SNI="${REALITY_SNI:-www.microsoft.com}"
+REALITY_SHORT_ID="${REALITY_SHORT_ID:-}"
+TUIC_PASSWORD="${TUIC_PASSWORD:-}"
+WARP_SCOPE="${WARP_SCOPE:-all}"
+WARP_SPLIT_GEOSITE="${WARP_SPLIT_GEOSITE-openai,anthropic,google-gemini,netflix,disney}"
+WARP_SPLIT_DOMAINS="${WARP_SPLIT_DOMAINS:-}"
 AUTO_TLS="${AUTO_TLS:-false}"
 AUTO_DOMAIN="${AUTO_DOMAIN:-true}"
 BASE_DOMAIN="${BASE_DOMAIN:-}"
@@ -119,6 +129,14 @@ Environment:
   VLESS_PORT      默认 38443
   ANYTLS_PORT     默认 4443
   SS_PORT         默认 48443
+  ENABLE_TUIC     true/false，默认 false（TUIC v5，UDP）
+  TUIC_PORT       默认 36443
+  ENABLE_REALITY  true/false，默认 false（VLESS-Reality，不需要证书）
+  REALITY_PORT    默认 443
+  REALITY_SNI     Reality 伪装站点，默认 www.microsoft.com
+  WARP_SCOPE      all/split，默认 all；split 时只有指定站点走 WARP
+  WARP_SPLIT_GEOSITE 逗号分隔的 geosite 名称，默认 openai,anthropic,google-gemini,netflix,disney
+  WARP_SPLIT_DOMAINS 逗号分隔的额外域名后缀，可选
   MIXED_PORT      默认 1080，仅绑定宿主机 127.0.0.1，给本机 HTTP+SOCKS5 代理使用
   AUTH_UUID       可选，固定认证值
   HY2_PASSWORD    可选，覆盖 HY2 密码
@@ -411,6 +429,9 @@ resolve_auth_values() {
   fi
   if [[ "$ENABLE_ANYTLS" == "true" && -z "$ANYTLS_PASSWORD" ]]; then
     ANYTLS_PASSWORD="$AUTH_UUID"
+  fi
+  if [[ "$ENABLE_TUIC" == "true" && -z "$TUIC_PASSWORD" ]]; then
+    TUIC_PASSWORD="$AUTH_UUID"
   fi
   if [[ "$ENABLE_SS" == "true" && -z "$SS_PASSWORD" ]]; then
     need_cmd openssl
@@ -772,7 +793,7 @@ load_existing_env() {
     key="${key%$'\r'}"
     value="${value%$'\r'}"
     case "$key" in
-      HY2_PORT|HY2_PORT_HOPPING|HY2_HOP_PORTS|VLESS_PORT|ANYTLS_PORT|SS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|ENABLE_ANYTLS|ENABLE_SS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|ANYTLS_PASSWORD|SS_PASSWORD|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|WARP_MODE|WARP_AUTORECOVER|WARP_PROBE_INTERVAL|USQUE_HTTP2|CF_Token|CF_Account_ID|CF_Zone_ID)
+      HY2_PORT|HY2_PORT_HOPPING|HY2_HOP_PORTS|VLESS_PORT|ANYTLS_PORT|SS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|ENABLE_ANYTLS|ENABLE_SS|TUIC_PORT|ENABLE_TUIC|TUIC_PASSWORD|REALITY_PORT|ENABLE_REALITY|REALITY_SNI|REALITY_SHORT_ID|WARP_SCOPE|WARP_SPLIT_GEOSITE|WARP_SPLIT_DOMAINS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|ANYTLS_PASSWORD|SS_PASSWORD|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|WARP_MODE|WARP_AUTORECOVER|WARP_PROBE_INTERVAL|USQUE_HTTP2|CF_Token|CF_Account_ID|CF_Zone_ID)
         printf -v "$key" '%s' "$value"
         ;;
     esac
@@ -838,6 +859,23 @@ collect_bootstrap_inputs() {
   if [[ "$ENABLE_SS" == "true" ]]; then
     SS_PORT="$(ask_input "Shadowsocks 端口" "$SS_PORT")"
   fi
+  ENABLE_TUIC="$(normalize_bool "$(ask_choice "启用 TUIC v5 (y/n 或 true/false)" "${ENABLE_TUIC}")")"
+  if [[ "$ENABLE_TUIC" == "true" ]]; then
+    TUIC_PORT="$(ask_input "TUIC 端口 (UDP)" "$TUIC_PORT")"
+  fi
+  ENABLE_REALITY="$(normalize_bool "$(ask_choice "启用 VLESS-Reality (y/n 或 true/false)" "${ENABLE_REALITY}")")"
+  if [[ "$ENABLE_REALITY" == "true" ]]; then
+    REALITY_PORT="$(ask_input "Reality 端口" "$REALITY_PORT")"
+    REALITY_SNI="$(ask_input "Reality 伪装站点 (需支持 TLS 1.3)" "$REALITY_SNI")"
+  fi
+
+  printf "\nWARP 分流\n" >&2
+  printf "all = 全部流量走 WARP；split = 只有指定站点走 WARP，其余直连。\n" >&2
+  WARP_SCOPE="$(ask_input "WARP 范围 (all/split)" "$WARP_SCOPE")"
+  if [[ "$WARP_SCOPE" == "split" ]]; then
+    WARP_SPLIT_GEOSITE="$(ask_input "走 WARP 的 geosite (逗号分隔)" "$WARP_SPLIT_GEOSITE")"
+    WARP_SPLIT_DOMAINS="$(ask_input "额外走 WARP 的域名后缀 (逗号分隔，可留空)" "$WARP_SPLIT_DOMAINS")"
+  fi
   MIXED_PORT="$(ask_input "本机 Mixed 代理端口 (HTTP+SOCKS5，仅 127.0.0.1)" "$MIXED_PORT")"
 
   if [[ "$(normalize_bool "$(ask_choice "配置高级选项 (y/n)" "n")")" == "true" ]]; then
@@ -863,6 +901,9 @@ confirm_config() {
   printf "  VLESS: %s (端口 %s)\n" "$ENABLE_VLESS" "$VLESS_PORT" >&2
   printf "  AnyTLS: %s (端口 %s)\n" "$ENABLE_ANYTLS" "$ANYTLS_PORT" >&2
   printf "  Shadowsocks: %s (端口 %s)\n" "$ENABLE_SS" "$SS_PORT" >&2
+  printf "  TUIC: %s (端口 %s/udp)\n" "$ENABLE_TUIC" "$TUIC_PORT" >&2
+  printf "  Reality: %s (端口 %s, SNI %s)\n" "$ENABLE_REALITY" "$REALITY_PORT" "$REALITY_SNI" >&2
+  printf "  WARP 范围: %s%s\n" "$WARP_SCOPE" "$([[ "$WARP_SCOPE" == "split" ]] && printf ' (%s %s)' "$WARP_SPLIT_GEOSITE" "$WARP_SPLIT_DOMAINS")" >&2
   printf "  Mixed 端口: %s (仅本机)\n" "$MIXED_PORT" >&2
   [[ "$(normalize_bool "$(ask_choice "确认并继续 (y/n)" "y")")" == "true" ]]
 }
@@ -941,6 +982,8 @@ validate_hy2_hop_ports() {
     [[ "$ENABLE_VLESS" != "true" || "$port" != "$VLESS_PORT" ]] || { err "HY2 跳跃端口范围与 VLESS_PORT 冲突: $port"; exit 1; }
     [[ "$ENABLE_ANYTLS" != "true" || "$port" != "$ANYTLS_PORT" ]] || { err "HY2 跳跃端口范围与 ANYTLS_PORT 冲突: $port"; exit 1; }
     [[ "$ENABLE_SS" != "true" || "$port" != "$SS_PORT" ]] || { err "HY2 跳跃端口范围与 SS_PORT 冲突: $port"; exit 1; }
+    [[ "$ENABLE_TUIC" != "true" || "$port" != "$TUIC_PORT" ]] || { err "HY2 跳跃端口范围与 TUIC_PORT 冲突: $port"; exit 1; }
+    [[ "$ENABLE_REALITY" != "true" || "$port" != "$REALITY_PORT" ]] || { err "HY2 跳跃端口范围与 REALITY_PORT 冲突: $port"; exit 1; }
   done
 }
 
@@ -970,6 +1013,8 @@ select_hy2_hop_ports() {
   [[ "$ENABLE_VLESS" == "true" ]] && used_ports[$VLESS_PORT]=1
   [[ "$ENABLE_ANYTLS" == "true" ]] && used_ports[$ANYTLS_PORT]=1
   [[ "$ENABLE_SS" == "true" ]] && used_ports[$SS_PORT]=1
+  [[ "$ENABLE_TUIC" == "true" ]] && used_ports[$TUIC_PORT]=1
+  [[ "$ENABLE_REALITY" == "true" ]] && used_ports[$REALITY_PORT]=1
 
   local min_port=20000 max_start=59951 start port attempt random_value
   for ((attempt=1; attempt<=2000; attempt++)); do
@@ -1001,6 +1046,8 @@ validate_config() {
   validate_true_false "ENABLE_VLESS" "$ENABLE_VLESS"
   validate_true_false "ENABLE_ANYTLS" "$ENABLE_ANYTLS"
   validate_true_false "ENABLE_SS" "$ENABLE_SS"
+  validate_true_false "ENABLE_TUIC" "$ENABLE_TUIC"
+  validate_true_false "ENABLE_REALITY" "$ENABLE_REALITY"
   validate_true_false "HY2_PORT_HOPPING" "$HY2_PORT_HOPPING"
   validate_true_false "AUTO_DOMAIN" "$AUTO_DOMAIN"
   validate_bool "$AUTO_TLS"
@@ -1015,6 +1062,23 @@ validate_config() {
   fi
   if [[ "$ENABLE_SS" == "true" ]]; then
     validate_port "SS_PORT" "$SS_PORT"
+  fi
+  if [[ "$ENABLE_TUIC" == "true" ]]; then
+    validate_port "TUIC_PORT" "$TUIC_PORT"
+  fi
+  if [[ "$ENABLE_REALITY" == "true" ]]; then
+    validate_port "REALITY_PORT" "$REALITY_PORT"
+    [[ "$REALITY_SNI" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || { err "REALITY_SNI 必须是域名: $REALITY_SNI"; exit 1; }
+    [[ -z "$REALITY_SHORT_ID" || "$REALITY_SHORT_ID" =~ ^([0-9a-f]{2}){1,8}$ ]] || { err "REALITY_SHORT_ID 必须是 2-16 位小写十六进制（偶数位）"; exit 1; }
+  fi
+  if [[ "$WARP_SCOPE" != "all" && "$WARP_SCOPE" != "split" ]]; then
+    err "WARP_SCOPE 必须是 all 或 split"
+    exit 1
+  fi
+  if [[ "$WARP_SCOPE" == "split" ]]; then
+    [[ -n "$WARP_SPLIT_GEOSITE" || -n "$WARP_SPLIT_DOMAINS" ]] || { err "WARP_SCOPE=split 时 WARP_SPLIT_GEOSITE 和 WARP_SPLIT_DOMAINS 不能都为空"; exit 1; }
+    [[ "$WARP_SPLIT_GEOSITE" =~ ^[a-z0-9@!._,-]*$ ]] || { err "WARP_SPLIT_GEOSITE 只能是逗号分隔的 geosite 名称"; exit 1; }
+    [[ "$WARP_SPLIT_DOMAINS" =~ ^[A-Za-z0-9.,-]*$ ]] || { err "WARP_SPLIT_DOMAINS 只能是逗号分隔的域名"; exit 1; }
   fi
   validate_port "MIXED_PORT" "$MIXED_PORT"
   select_hy2_hop_ports
@@ -1049,16 +1113,18 @@ validate_config() {
   validate_env_value "VLESS_UUID" "$VLESS_UUID"
   validate_secret_value "ANYTLS_PASSWORD" "$ANYTLS_PASSWORD"
   validate_secret_value "SS_PASSWORD" "$SS_PASSWORD"
+  validate_secret_value "TUIC_PASSWORD" "$TUIC_PASSWORD"
   validate_env_value "WARP_LICENSE_KEY" "$WARP_LICENSE_KEY"
   validate_token_value "CF_Token" "$CF_Token"
   validate_env_value "CF_Account_ID" "$CF_Account_ID"
   validate_env_value "CF_Zone_ID" "$CF_Zone_ID"
   if [[ "$ENABLE_HY2" != "true" && "$ENABLE_VLESS" != "true" &&
-        "$ENABLE_ANYTLS" != "true" && "$ENABLE_SS" != "true" ]]; then
-    err "至少要启用一种协议 (ENABLE_HY2/ENABLE_VLESS/ENABLE_ANYTLS/ENABLE_SS)"
+        "$ENABLE_ANYTLS" != "true" && "$ENABLE_SS" != "true" &&
+        "$ENABLE_TUIC" != "true" && "$ENABLE_REALITY" != "true" ]]; then
+    err "至少要启用一种协议 (ENABLE_HY2/ENABLE_VLESS/ENABLE_ANYTLS/ENABLE_SS/ENABLE_TUIC/ENABLE_REALITY)"
     exit 1
   fi
-  if [[ "$ENABLE_VLESS" == "true" ]]; then
+  if [[ "$ENABLE_VLESS" == "true" || "$ENABLE_REALITY" == "true" || "$ENABLE_TUIC" == "true" ]]; then
     local effective_vless_uuid="${VLESS_UUID:-$AUTH_UUID}"
     if [[ -n "$effective_vless_uuid" ]] &&
        ! [[ "$effective_vless_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
@@ -1071,6 +1137,8 @@ validate_config() {
   [[ "$ENABLE_VLESS" == "true" ]] && enabled_ports+=("VLESS:$VLESS_PORT")
   [[ "$ENABLE_ANYTLS" == "true" ]] && enabled_ports+=("AnyTLS:$ANYTLS_PORT")
   [[ "$ENABLE_SS" == "true" ]] && enabled_ports+=("Shadowsocks:$SS_PORT")
+  [[ "$ENABLE_TUIC" == "true" ]] && enabled_ports+=("TUIC:$TUIC_PORT")
+  [[ "$ENABLE_REALITY" == "true" ]] && enabled_ports+=("Reality:$REALITY_PORT")
   enabled_ports+=("Mixed:$MIXED_PORT")
   local port_item port_value seen_ports=""
   for port_item in "${enabled_ports[@]}"; do
@@ -1127,6 +1195,14 @@ write_compose() {
     ports_block="${ports_block}
       - \"\${SS_PORT:-48443}:\${SS_PORT:-48443}/tcp\""
   fi
+  if [[ "$ENABLE_TUIC" == "true" ]]; then
+    ports_block="${ports_block}
+      - \"\${TUIC_PORT:-36443}:\${TUIC_PORT:-36443}/udp\""
+  fi
+  if [[ "$ENABLE_REALITY" == "true" ]]; then
+    ports_block="${ports_block}
+      - \"\${REALITY_PORT:-443}:\${REALITY_PORT:-443}/tcp\""
+  fi
   ports_block="${ports_block}
       - \"127.0.0.1:\${MIXED_PORT:-1080}:\${MIXED_PORT:-1080}/tcp\""
 
@@ -1170,6 +1246,16 @@ ${ports_block}
       - ENABLE_VLESS=\${ENABLE_VLESS:-true}
       - ENABLE_ANYTLS=\${ENABLE_ANYTLS:-false}
       - ENABLE_SS=\${ENABLE_SS:-false}
+      - TUIC_PORT=\${TUIC_PORT:-36443}
+      - ENABLE_TUIC=\${ENABLE_TUIC:-false}
+      - TUIC_PASSWORD=\${TUIC_PASSWORD:-}
+      - REALITY_PORT=\${REALITY_PORT:-443}
+      - ENABLE_REALITY=\${ENABLE_REALITY:-false}
+      - REALITY_SNI=\${REALITY_SNI:-www.microsoft.com}
+      - REALITY_SHORT_ID=\${REALITY_SHORT_ID:-}
+      - WARP_SCOPE=\${WARP_SCOPE:-all}
+      - WARP_SPLIT_GEOSITE=\${WARP_SPLIT_GEOSITE-openai,anthropic,google-gemini,netflix,disney}
+      - WARP_SPLIT_DOMAINS=\${WARP_SPLIT_DOMAINS:-}
       - AUTH_UUID=\${AUTH_UUID:-}
       - HY2_PASSWORD=\${HY2_PASSWORD:-}
       - VLESS_UUID=\${VLESS_UUID:-}
@@ -1207,6 +1293,16 @@ ENABLE_HY2=$ENABLE_HY2
 ENABLE_VLESS=$ENABLE_VLESS
 ENABLE_ANYTLS=$ENABLE_ANYTLS
 ENABLE_SS=$ENABLE_SS
+TUIC_PORT=$TUIC_PORT
+ENABLE_TUIC=$ENABLE_TUIC
+TUIC_PASSWORD=$TUIC_PASSWORD
+REALITY_PORT=$REALITY_PORT
+ENABLE_REALITY=$ENABLE_REALITY
+REALITY_SNI=$REALITY_SNI
+REALITY_SHORT_ID=$REALITY_SHORT_ID
+WARP_SCOPE=$WARP_SCOPE
+WARP_SPLIT_GEOSITE=$WARP_SPLIT_GEOSITE
+WARP_SPLIT_DOMAINS=$WARP_SPLIT_DOMAINS
 AUTO_DOMAIN=$AUTO_DOMAIN
 BASE_DOMAIN=$BASE_DOMAIN
 NODE_NAME=$NODE_NAME
@@ -1433,6 +1529,9 @@ cmd_status() {
   printf '  域名: %s\n' "${TLS_DOMAIN:-未配置}"
   printf '  HY2: %s (端口 %s)\n' "$ENABLE_HY2" "$HY2_PORT"
   printf '  VLESS: %s (端口 %s)\n' "$ENABLE_VLESS" "$VLESS_PORT"
+  printf '  TUIC: %s (端口 %s/udp)\n' "$ENABLE_TUIC" "$TUIC_PORT"
+  printf '  Reality: %s (端口 %s)\n' "$ENABLE_REALITY" "$REALITY_PORT"
+  printf '  WARP 范围: %s\n' "$WARP_SCOPE"
   printf '  Mixed: 127.0.0.1:%s\n' "$MIXED_PORT"
   docker inspect singbox-warp --format '  镜像: {{.Config.Image}}'
   docker inspect singbox-warp --format '  镜像 ID: {{.Image}}'
@@ -1492,11 +1591,11 @@ cmd_show_nodes() {
     has_any="true"
   fi
 
-  vless_uuid="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .users[0].uuid // empty' | head -n1)"
-  vless_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .listen_port // empty' | head -n1)"
-  vless_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tls.server_name // empty' | head -n1)"
-  vless_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .tag // empty' | head -n1)"
-  vless_flow="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless") | .users[0].flow // empty' | head -n1)"
+  vless_uuid="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not)) | .users[0].uuid // empty' | head -n1)"
+  vless_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not)) | .listen_port // empty' | head -n1)"
+  vless_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not)) | .tls.server_name // empty' | head -n1)"
+  vless_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not)) | .tag // empty' | head -n1)"
+  vless_flow="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not)) | .users[0].flow // empty' | head -n1)"
   if [[ -n "$vless_uuid" && -n "$vless_port" && -n "$vless_sni" ]]; then
     vless_tag="${vless_tag:-vless-${node_name}}"
     vless_link="vless://${vless_uuid}@${vless_sni}:${vless_port}?encryption=none&security=tls&sni=${vless_sni}&type=tcp"
@@ -1521,6 +1620,36 @@ cmd_show_nodes() {
     printf '[node] %s\n' "$anytls_link"
     if command -v qrencode >/dev/null 2>&1; then
       qrencode -t ANSIUTF8 "$anytls_link"
+    fi
+    has_any="true"
+  fi
+
+  local reality_uuid reality_port reality_sni reality_sid reality_pbk reality_link creds
+  local tuic_uuid tuic_password tuic_port tuic_sni tuic_link
+  creds="$(docker exec singbox-warp sh -c 'cat /var/lib/wgcf/credentials.env' 2>/dev/null || true)"
+  reality_uuid="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and (.tls.reality.enabled // false)) | .users[0].uuid // empty' | head -n1)"
+  reality_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and (.tls.reality.enabled // false)) | .listen_port // empty' | head -n1)"
+  reality_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and (.tls.reality.enabled // false)) | .tls.server_name // empty' | head -n1)"
+  reality_sid="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and (.tls.reality.enabled // false)) | .tls.reality.short_id[0] // empty' | head -n1)"
+  reality_pbk="$(printf '%s\n' "$creds" | sed -n 's/^REALITY_PUBLIC_KEY=//p' | head -n1)"
+  if [[ -n "$reality_uuid" && -n "$reality_port" && -n "$reality_pbk" && -n "$TLS_DOMAIN" ]]; then
+    reality_link="vless://${reality_uuid}@${TLS_DOMAIN}:${reality_port}?encryption=none&security=reality&sni=${reality_sni}&fp=chrome&pbk=${reality_pbk}&sid=${reality_sid}&type=tcp&flow=xtls-rprx-vision#reality-${node_name}"
+    printf '[node] %s\n' "$reality_link"
+    if command -v qrencode >/dev/null 2>&1; then
+      qrencode -t ANSIUTF8 "$reality_link"
+    fi
+    has_any="true"
+  fi
+
+  tuic_uuid="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="tuic") | .users[0].uuid // empty' | head -n1)"
+  tuic_password="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="tuic") | .users[0].password // empty' | head -n1)"
+  tuic_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="tuic") | .listen_port // empty' | head -n1)"
+  tuic_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="tuic") | .tls.server_name // empty' | head -n1)"
+  if [[ -n "$tuic_uuid" && -n "$tuic_password" && -n "$tuic_port" && -n "$tuic_sni" ]]; then
+    tuic_link="tuic://${tuic_uuid}:${tuic_password}@${tuic_sni}:${tuic_port}?sni=${tuic_sni}&alpn=h3&congestion_control=bbr#tuic-${node_name}"
+    printf '[node] %s\n' "$tuic_link"
+    if command -v qrencode >/dev/null 2>&1; then
+      qrencode -t ANSIUTF8 "$tuic_link"
     fi
     has_any="true"
   fi

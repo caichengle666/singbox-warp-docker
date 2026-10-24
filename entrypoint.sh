@@ -13,6 +13,18 @@ ENABLE_HY2_ENV="${ENABLE_HY2:-true}"
 ENABLE_VLESS_ENV="${ENABLE_VLESS:-true}"
 ENABLE_ANYTLS_ENV="${ENABLE_ANYTLS:-false}"
 ENABLE_SS_ENV="${ENABLE_SS:-false}"
+TUIC_PORT_ENV="${TUIC_PORT:-36443}"
+ENABLE_TUIC_ENV="${ENABLE_TUIC:-false}"
+REALITY_PORT_ENV="${REALITY_PORT:-443}"
+ENABLE_REALITY_ENV="${ENABLE_REALITY:-false}"
+REALITY_SNI_ENV="${REALITY_SNI:-www.microsoft.com}"
+REALITY_PRIVATE_KEY_ENV="${REALITY_PRIVATE_KEY:-}"
+REALITY_PUBLIC_KEY_ENV="${REALITY_PUBLIC_KEY:-}"
+REALITY_SHORT_ID_ENV="${REALITY_SHORT_ID:-}"
+WARP_SCOPE_ENV="${WARP_SCOPE:-all}"
+WARP_SPLIT_GEOSITE_ENV="${WARP_SPLIT_GEOSITE-openai,anthropic,google-gemini,netflix,disney}"
+WARP_SPLIT_DOMAINS_ENV="${WARP_SPLIT_DOMAINS:-}"
+RULESET_BASE_URL_ENV="${RULESET_BASE_URL:-https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set}"
 MIXED_PORT_ENV="${MIXED_PORT:-1080}"
 AUTO_TLS_ENV="${AUTO_TLS:-false}"
 TLS_DOMAIN_ENV="${TLS_DOMAIN:-}"
@@ -31,6 +43,7 @@ HY2_PASSWORD_ENV="${HY2_PASSWORD:-}"
 VLESS_UUID_ENV="${VLESS_UUID:-}"
 ANYTLS_PASSWORD_ENV="${ANYTLS_PASSWORD:-}"
 SS_PASSWORD_ENV="${SS_PASSWORD:-}"
+TUIC_PASSWORD_ENV="${TUIC_PASSWORD:-}"
 NODE_NAME_ENV="${NODE_NAME:-}"
 SINGBOX_PID=""
 MANUAL_CERT_SUM=""
@@ -52,6 +65,8 @@ WARP_FAIL_RECHECK_INTERVAL=10
 WARP_RETRY_MAX_INTERVAL=900
 HY2_PORT_HOPPING_ENV="${HY2_PORT_HOPPING:-false}"
 HY2_HOP_PORTS_ENV="${HY2_HOP_PORTS:-}"
+RULESET_DIR="${WGCF_DIR}/rulesets"
+RULESET_REFRESH_INTERVAL=86400
 WARP_PROBE_URLS=(
   "https://api.ipify.org"
   "https://www.cloudflare.com/cdn-cgi/trace"
@@ -173,6 +188,30 @@ ensure_tls_cert() {
       echo "[tls] cert updated during startup renewal check"
     fi
   fi
+}
+
+# Split mode reads geosite rule sets from local files. They are downloaded
+# here instead of by sing-box, because sing-box refuses to start when a remote
+# rule set cannot be fetched; a failed refresh keeps the previous file, and
+# sing-box reloads local rule-set files when they change.
+download_rulesets() {
+  local site tmp
+  [ "$WARP_SCOPE_ENV" = "split" ] || return 0
+  mkdir -p "$RULESET_DIR"
+  for site in ${WARP_SPLIT_GEOSITE_ENV//,/ }; do
+    tmp="$(mktemp "$RULESET_DIR/.geosite-${site}.XXXXXX")"
+    if curl -fsSL --retry 2 --connect-timeout 10 --max-time 60 \
+      "${RULESET_BASE_URL_ENV%/}/geosite-${site}.srs" -o "$tmp" && [ -s "$tmp" ]; then
+      mv "$tmp" "$RULESET_DIR/geosite-${site}.srs"
+    else
+      rm -f "$tmp"
+      if [ -s "$RULESET_DIR/geosite-${site}.srs" ]; then
+        echo "[warp] geosite-${site} refresh failed; keeping previous copy"
+      else
+        echo "[warp] geosite-${site} download failed; skipping it"
+      fi
+    fi
+  done
 }
 
 cert_checksum() {
@@ -390,8 +429,16 @@ set_route_outbound() {
 
   local tmp_config
   tmp_config="$(mktemp)"
-  # Only route.final changes; the warp-probe and private-address rules stay.
-  if ! jq --arg outbound "$outbound" '.route.final = $outbound' \
+  # WARP_SCOPE=all: only route.final changes.
+  # WARP_SCOPE=split: only the split rules (route rules without an inbound
+  # match) change; route.final stays direct. The warp-probe and
+  # private-address rules are never touched.
+  if ! jq --arg outbound "$outbound" --arg scope "$WARP_SCOPE_ENV" '
+    if $scope == "split" then
+      .route.rules |= map(if .action == "route" and (has("inbound") | not) then .outbound = $outbound else . end)
+    else
+      .route.final = $outbound
+    end' \
     "$SB_CONFIG" > "$tmp_config"; then
     rm -f "$tmp_config"
     echo "[warp] failed to prepare $outbound route; keeping $current"
@@ -534,6 +581,47 @@ validate_required_config() {
     echo "[config] ENABLE_SS must be true or false, got: $ENABLE_SS_ENV"
     exit 1
   fi
+  if [ "$ENABLE_TUIC_ENV" != "true" ] && [ "$ENABLE_TUIC_ENV" != "false" ]; then
+    echo "[config] ENABLE_TUIC must be true or false, got: $ENABLE_TUIC_ENV"
+    exit 1
+  fi
+  if [ "$ENABLE_REALITY_ENV" != "true" ] && [ "$ENABLE_REALITY_ENV" != "false" ]; then
+    echo "[config] ENABLE_REALITY must be true or false, got: $ENABLE_REALITY_ENV"
+    exit 1
+  fi
+  case "$WARP_SCOPE_ENV" in
+    all|split) ;;
+    *) echo "[config] WARP_SCOPE must be all or split, got: $WARP_SCOPE_ENV"; exit 1 ;;
+  esac
+  if [ "$WARP_SCOPE_ENV" = "split" ]; then
+    if [ -z "$WARP_SPLIT_GEOSITE_ENV" ] && [ -z "$WARP_SPLIT_DOMAINS_ENV" ]; then
+      echo "[config] WARP_SCOPE=split needs WARP_SPLIT_GEOSITE or WARP_SPLIT_DOMAINS"
+      exit 1
+    fi
+    if ! [[ "$WARP_SPLIT_GEOSITE_ENV" =~ ^[a-z0-9@!._,-]*$ ]]; then
+      echo "[config] WARP_SPLIT_GEOSITE must be a comma-separated list of geosite names, got: $WARP_SPLIT_GEOSITE_ENV"
+      exit 1
+    fi
+    if ! [[ "$WARP_SPLIT_DOMAINS_ENV" =~ ^[A-Za-z0-9.,-]*$ ]]; then
+      echo "[config] WARP_SPLIT_DOMAINS must be a comma-separated list of domains, got: $WARP_SPLIT_DOMAINS_ENV"
+      exit 1
+    fi
+  fi
+  if [ "$ENABLE_REALITY_ENV" = "true" ]; then
+    if ! [[ "$REALITY_SNI_ENV" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+      echo "[config] REALITY_SNI must be a hostname, got: $REALITY_SNI_ENV"
+      exit 1
+    fi
+    if [ -n "$REALITY_SHORT_ID_ENV" ] && ! [[ "$REALITY_SHORT_ID_ENV" =~ ^([0-9a-f]{2}){1,8}$ ]]; then
+      echo "[config] REALITY_SHORT_ID must be 2-16 lowercase hex characters (even length)"
+      exit 1
+    fi
+    if { [ -n "$REALITY_PRIVATE_KEY_ENV" ] && [ -z "$REALITY_PUBLIC_KEY_ENV" ]; } ||
+       { [ -z "$REALITY_PRIVATE_KEY_ENV" ] && [ -n "$REALITY_PUBLIC_KEY_ENV" ]; }; then
+      echo "[config] REALITY_PRIVATE_KEY and REALITY_PUBLIC_KEY must be set together"
+      exit 1
+    fi
+  fi
   if [ "$WARP_AUTORECOVER_ENV" != "true" ] && [ "$WARP_AUTORECOVER_ENV" != "false" ]; then
     echo "[config] WARP_AUTORECOVER must be true or false, got: $WARP_AUTORECOVER_ENV"
     exit 1
@@ -548,7 +636,8 @@ validate_required_config() {
   fi
   validate_positive_integer "WARP_PROBE_INTERVAL" "$WARP_PROBE_INTERVAL_ENV"
   if [ "$ENABLE_HY2_ENV" != "true" ] && [ "$ENABLE_VLESS_ENV" != "true" ] &&
-     [ "$ENABLE_ANYTLS_ENV" != "true" ] && [ "$ENABLE_SS_ENV" != "true" ]; then
+     [ "$ENABLE_ANYTLS_ENV" != "true" ] && [ "$ENABLE_SS_ENV" != "true" ] &&
+     [ "$ENABLE_TUIC_ENV" != "true" ] && [ "$ENABLE_REALITY_ENV" != "true" ]; then
     echo "[config] at least one inbound must be enabled"
     exit 1
   fi
@@ -559,33 +648,33 @@ validate_required_config() {
   validate_port "VLESS_PORT" "$VLESS_PORT_ENV"
   validate_port "ANYTLS_PORT" "$ANYTLS_PORT_ENV"
   validate_port "SS_PORT" "$SS_PORT_ENV"
+  validate_port "TUIC_PORT" "$TUIC_PORT_ENV"
+  validate_port "REALITY_PORT" "$REALITY_PORT_ENV"
   validate_port "MIXED_PORT" "$MIXED_PORT_ENV"
-  local internal_port
-  for internal_port in "$WARP_PROBE_PORT" "$USQUE_PORT"; do
-    if [ "$MIXED_PORT_ENV" = "$internal_port" ] ||
-       { [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$VLESS_PORT_ENV" = "$internal_port" ]; } ||
-       { [ "$ENABLE_ANYTLS_ENV" = "true" ] && [ "$ANYTLS_PORT_ENV" = "$internal_port" ]; } ||
-       { [ "$ENABLE_SS_ENV" = "true" ] && [ "$SS_PORT_ENV" = "$internal_port" ]; }; then
-      echo "[config] port $internal_port is reserved for internal WARP probing"
+
+  # Enabled inbound ports (plus MIXED) must be unique and must not take the
+  # loopback ports used internally for WARP probing and usque.
+  local -a used_ports=("MIXED:$MIXED_PORT_ENV")
+  [ "$ENABLE_HY2_ENV" = "true" ] && used_ports+=("HY2:$HY2_PORT_ENV")
+  [ "$ENABLE_VLESS_ENV" = "true" ] && used_ports+=("VLESS:$VLESS_PORT_ENV")
+  [ "$ENABLE_ANYTLS_ENV" = "true" ] && used_ports+=("ANYTLS:$ANYTLS_PORT_ENV")
+  [ "$ENABLE_SS_ENV" = "true" ] && used_ports+=("SS:$SS_PORT_ENV")
+  [ "$ENABLE_TUIC_ENV" = "true" ] && used_ports+=("TUIC:$TUIC_PORT_ENV")
+  [ "$ENABLE_REALITY_ENV" = "true" ] && used_ports+=("REALITY:$REALITY_PORT_ENV")
+  local item port seen=" "
+  for item in "${used_ports[@]}"; do
+    port="${item#*:}"
+    if [ "$port" = "$WARP_PROBE_PORT" ] || [ "$port" = "$USQUE_PORT" ]; then
+      echo "[config] ${item%%:*}_PORT $port is reserved for internal WARP probing"
       exit 1
     fi
+    case "$seen" in
+      *" $port "*) echo "[config] enabled inbound ports must be different (duplicate: $port)"; exit 1 ;;
+    esac
+    seen="${seen}${port} "
   done
 
-  if { [ "$ENABLE_HY2_ENV" = "true" ] && [ "$MIXED_PORT_ENV" = "$HY2_PORT_ENV" ]; } ||
-     { [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$MIXED_PORT_ENV" = "$VLESS_PORT_ENV" ]; } ||
-     { [ "$ENABLE_ANYTLS_ENV" = "true" ] && [ "$MIXED_PORT_ENV" = "$ANYTLS_PORT_ENV" ]; } ||
-     { [ "$ENABLE_SS_ENV" = "true" ] && [ "$MIXED_PORT_ENV" = "$SS_PORT_ENV" ]; } ||
-     { [ "$ENABLE_HY2_ENV" = "true" ] && [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$HY2_PORT_ENV" = "$VLESS_PORT_ENV" ]; } ||
-     { [ "$ENABLE_HY2_ENV" = "true" ] && [ "$ENABLE_ANYTLS_ENV" = "true" ] && [ "$HY2_PORT_ENV" = "$ANYTLS_PORT_ENV" ]; } ||
-     { [ "$ENABLE_HY2_ENV" = "true" ] && [ "$ENABLE_SS_ENV" = "true" ] && [ "$HY2_PORT_ENV" = "$SS_PORT_ENV" ]; } ||
-     { [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$ENABLE_ANYTLS_ENV" = "true" ] && [ "$VLESS_PORT_ENV" = "$ANYTLS_PORT_ENV" ]; } ||
-     { [ "$ENABLE_VLESS_ENV" = "true" ] && [ "$ENABLE_SS_ENV" = "true" ] && [ "$VLESS_PORT_ENV" = "$SS_PORT_ENV" ]; } ||
-     { [ "$ENABLE_ANYTLS_ENV" = "true" ] && [ "$ENABLE_SS_ENV" = "true" ] && [ "$ANYTLS_PORT_ENV" = "$SS_PORT_ENV" ]; }; then
-    echo "[config] enabled inbound ports must be different"
-    exit 1
-  fi
-
-  if [ "$ENABLE_VLESS_ENV" = "true" ]; then
+  if [ "$ENABLE_VLESS_ENV" = "true" ] || [ "$ENABLE_REALITY_ENV" = "true" ] || [ "$ENABLE_TUIC_ENV" = "true" ]; then
     local effective_vless_uuid="${VLESS_UUID_ENV:-$AUTH_UUID_ENV}"
     if [ -n "$effective_vless_uuid" ] &&
        ! [[ "$effective_vless_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
@@ -714,6 +803,40 @@ if [ -z "$SS_PASSWORD_ENV" ]; then
   fi
 fi
 
+if [ -z "$TUIC_PASSWORD_ENV" ]; then
+  TUIC_PASSWORD_ENV="$AUTH_UUID_ENV"
+fi
+REALITY_PRIVATE_KEY_EFFECTIVE="dummy"
+REALITY_SHORT_ID_EFFECTIVE="00"
+if [ "$ENABLE_REALITY_ENV" = "true" ]; then
+  if [ -n "$REALITY_PRIVATE_KEY_ENV" ]; then
+    REALITY_PRIVATE_KEY_EFFECTIVE="$REALITY_PRIVATE_KEY_ENV"
+  else
+    REALITY_PRIVATE_KEY_EFFECTIVE="$(load_persisted_credential REALITY_PRIVATE_KEY)"
+    REALITY_PUBLIC_KEY_ENV="$(load_persisted_credential REALITY_PUBLIC_KEY)"
+    if [ -z "$REALITY_PRIVATE_KEY_EFFECTIVE" ] || [ -z "$REALITY_PUBLIC_KEY_ENV" ]; then
+      reality_keypair="$(sing-box generate reality-keypair)"
+      REALITY_PRIVATE_KEY_EFFECTIVE="$(printf '%s\n' "$reality_keypair" | sed -n 's/^PrivateKey: *//p')"
+      REALITY_PUBLIC_KEY_ENV="$(printf '%s\n' "$reality_keypair" | sed -n 's/^PublicKey: *//p')"
+      if [ -z "$REALITY_PRIVATE_KEY_EFFECTIVE" ] || [ -z "$REALITY_PUBLIC_KEY_ENV" ]; then
+        echo "[auth] failed to generate Reality key pair"
+        exit 1
+      fi
+      save_persisted_credential REALITY_PRIVATE_KEY "$REALITY_PRIVATE_KEY_EFFECTIVE"
+      save_persisted_credential REALITY_PUBLIC_KEY "$REALITY_PUBLIC_KEY_ENV"
+      echo "[auth] generated Reality key pair and saved it to $CREDENTIALS_FILE"
+    fi
+  fi
+  REALITY_SHORT_ID_EFFECTIVE="$REALITY_SHORT_ID_ENV"
+  if [ -z "$REALITY_SHORT_ID_EFFECTIVE" ]; then
+    REALITY_SHORT_ID_EFFECTIVE="$(load_persisted_credential REALITY_SHORT_ID)"
+    if [ -z "$REALITY_SHORT_ID_EFFECTIVE" ]; then
+      REALITY_SHORT_ID_EFFECTIVE="$(openssl rand -hex 8)"
+      save_persisted_credential REALITY_SHORT_ID "$REALITY_SHORT_ID_EFFECTIVE"
+    fi
+  fi
+fi
+
 NODE_NAME_EFFECTIVE="$NODE_NAME_ENV"
 if [ -z "$NODE_NAME_EFFECTIVE" ]; then
   NODE_NAME_EFFECTIVE="$TLS_DOMAIN_ENV"
@@ -727,6 +850,8 @@ sed -i \
   -e "s|__VLESS_PORT__|$VLESS_PORT_ENV|g" \
   -e "s|__ANYTLS_PORT__|$ANYTLS_PORT_ENV|g" \
   -e "s|__SS_PORT__|$SS_PORT_ENV|g" \
+  -e "s|__TUIC_PORT__|$TUIC_PORT_ENV|g" \
+  -e "s|__REALITY_PORT__|$REALITY_PORT_ENV|g" \
   -e "s|__HY2_TAG__|$HY2_TAG_ENV|g" \
   -e "s|__VLESS_TAG__|$VLESS_TAG_ENV|g" \
   -e "s|__WARP_PEER_PORT__|$WARP_PEER_PORT|g" \
@@ -739,6 +864,12 @@ jq \
   --arg vlessUuid "$VLESS_UUID_ENV" \
   --arg anytlsPassword "$ANYTLS_PASSWORD_ENV" \
   --arg ssPassword "$SS_PASSWORD_ENV" \
+  --arg tuicPassword "$TUIC_PASSWORD_ENV" \
+  --arg realitySni "$REALITY_SNI_ENV" \
+  --arg realityPrivateKey "$REALITY_PRIVATE_KEY_EFFECTIVE" \
+  --arg realityShortId "$REALITY_SHORT_ID_EFFECTIVE" \
+  --arg enableTuic "$ENABLE_TUIC_ENV" \
+  --arg enableReality "$ENABLE_REALITY_ENV" \
   --arg tlsDomain "$TLS_DOMAIN_ENV" \
   --arg tlsCertPath "$TLS_CERT_PATH_ENV" \
   --arg tlsKeyPath "$TLS_KEY_PATH_ENV" \
@@ -755,22 +886,32 @@ jq \
   --arg hy2Tag "$HY2_TAG_ENV" \
   --arg vlessTag "$VLESS_TAG_ENV" \
   '
+  def isReality: .type=="vless" and (.tls.reality.enabled // false);
+  def isVlessTls: .type=="vless" and (isReality | not);
+  def usesCert: .type=="hysteria2" or isVlessTls or .type=="anytls" or .type=="tuic";
   (.inbounds[] | select(.type=="hysteria2") | .users[0].password) = $hy2Password |
   (.inbounds[] | select(.type=="vless") | .users[0].uuid) = $vlessUuid |
+  (.inbounds[] | select(.type=="tuic") | .users[0].uuid) = $vlessUuid |
+  (.inbounds[] | select(.type=="tuic") | .users[0].password) = $tuicPassword |
   (.inbounds[] | select(.type=="anytls") | .users[0].password) = $anytlsPassword |
   (.inbounds[] | select(.type=="shadowsocks") | .password) = $ssPassword |
   (.inbounds[] | select(.type=="hysteria2") | .tag) = $hy2Tag |
-  (.inbounds[] | select(.type=="vless") | .tag) = $vlessTag |
-  (.inbounds[] | select(.type=="hysteria2" or .type=="vless" or .type=="anytls") | .tls.server_name) = $tlsDomain |
-  (.inbounds[] | select(.type=="hysteria2" or .type=="vless" or .type=="anytls") | .tls.certificate_path) = $tlsCertPath |
-  (.inbounds[] | select(.type=="hysteria2" or .type=="vless" or .type=="anytls") | .tls.key_path) = $tlsKeyPath |
+  (.inbounds[] | select(isVlessTls) | .tag) = $vlessTag |
+  (.inbounds[] | select(usesCert) | .tls.server_name) = $tlsDomain |
+  (.inbounds[] | select(usesCert) | .tls.certificate_path) = $tlsCertPath |
+  (.inbounds[] | select(usesCert) | .tls.key_path) = $tlsKeyPath |
+  (.inbounds[] | select(isReality) | .tls.server_name) = $realitySni |
+  (.inbounds[] | select(isReality) | .tls.reality.handshake.server) = $realitySni |
+  (.inbounds[] | select(isReality) | .tls.reality.private_key) = $realityPrivateKey |
+  (.inbounds[] | select(isReality) | .tls.reality.short_id) = [$realityShortId] |
   .inbounds |= map(select(
     (.type=="hysteria2" and $enableHy2=="true") or
-    (.type=="vless" and $enableVless=="true") or
+    (isVlessTls and $enableVless=="true") or
+    (isReality and $enableReality=="true") or
     (.type=="anytls" and $enableAnytls=="true") or
     (.type=="shadowsocks" and $enableSs=="true") or
-    (.type=="mixed") or
-    (.type!="hysteria2" and .type!="vless" and .type!="anytls" and .type!="shadowsocks" and .type!="mixed")
+    (.type=="tuic" and $enableTuic=="true") or
+    (.type=="mixed")
   )) |
   (.endpoints[] | select(.tag=="warp") | .address) = [$warpAddressV4, $warpAddressV6] |
   (.endpoints[] | select(.tag=="warp") | .private_key) = $warpPrivateKey |
@@ -785,6 +926,46 @@ jq \
   ' \
   "$SB_CONFIG" > "$tmp_config"
 mv "$tmp_config" "$SB_CONFIG"
+
+if [ "$WARP_SCOPE_ENV" = "split" ]; then
+  # Only the listed sites use WARP; everything else stays direct. The split
+  # rules start on direct and set_route_outbound points them at the live
+  # WARP egress.
+  download_rulesets
+  split_sites=""
+  for site in ${WARP_SPLIT_GEOSITE_ENV//,/ }; do
+    [ -s "$RULESET_DIR/geosite-${site}.srs" ] && split_sites="${split_sites:+$split_sites,}$site"
+  done
+  if [ -z "$split_sites" ] && [ -z "$WARP_SPLIT_DOMAINS_ENV" ]; then
+    echo "[warp] scope=split but no rule set could be loaded; all traffic stays direct"
+  fi
+  tmp_config="$(mktemp)"
+  jq \
+    --arg geosite "$split_sites" \
+    --arg domains "$WARP_SPLIT_DOMAINS_ENV" \
+    --arg rulesetDir "$RULESET_DIR" \
+    '
+    ($geosite | split(",") | map(select(length > 0))) as $sites |
+    ($domains | split(",") | map(select(length > 0))) as $suffixes |
+    .route.rules += [{"action": "sniff"}] +
+      (if ($sites | length) > 0 then
+        [{"rule_set": ($sites | map("geosite-" + .)), "action": "route", "outbound": "direct"}]
+      else [] end) +
+      (if ($suffixes | length) > 0 then
+        [{"domain_suffix": $suffixes, "action": "route", "outbound": "direct"}]
+      else [] end) |
+    .route.rule_set = ($sites | map({
+      "type": "local",
+      "tag": ("geosite-" + .),
+      "format": "binary",
+      "path": ($rulesetDir + "/geosite-" + . + ".srs")
+    })) |
+    .route.final = "direct"
+    ' \
+    "$SB_CONFIG" > "$tmp_config"
+  mv "$tmp_config" "$SB_CONFIG"
+  echo "[warp] scope=split geosite=${split_sites:-none} domains=${WARP_SPLIT_DOMAINS_ENV:-none}"
+fi
 
 jq empty "$SB_CONFIG" >/dev/null
 if ! sing-box check -c "$SB_CONFIG"; then
@@ -810,12 +991,18 @@ print_node_links() {
     echo "[node] ${link}&insecure=0#$(uri_encode "$tag")"
   fi
   if [ "$ENABLE_VLESS_ENV" = "true" ]; then
-    tag="$(jq -r '.inbounds[] | select(.type=="vless") | .tag' "$cfg" | head -n1)"
+    tag="$(jq -r '.inbounds[] | select(.type=="vless" and ((.tls.reality.enabled // false) | not)) | .tag' "$cfg" | head -n1)"
     echo "[node] vless://${VLESS_UUID_ENV}@${host}:${VLESS_PORT_ENV}?encryption=none&security=tls&sni=${host}&type=tcp&flow=xtls-rprx-vision#$(uri_encode "$tag")"
   fi
   if [ "$ENABLE_ANYTLS_ENV" = "true" ]; then
     tag="$(jq -r '.inbounds[] | select(.type=="anytls") | .tag' "$cfg" | head -n1)"
     echo "[node] anytls://$(uri_encode "$ANYTLS_PASSWORD_ENV")@${host}:${ANYTLS_PORT_ENV}/?sni=${host}#$(uri_encode "$tag")"
+  fi
+  if [ "$ENABLE_REALITY_ENV" = "true" ]; then
+    echo "[node] vless://${VLESS_UUID_ENV}@${host}:${REALITY_PORT_ENV}?encryption=none&security=reality&sni=${REALITY_SNI_ENV}&fp=chrome&pbk=${REALITY_PUBLIC_KEY_ENV}&sid=${REALITY_SHORT_ID_EFFECTIVE}&type=tcp&flow=xtls-rprx-vision#$(uri_encode "reality-${NODE_NAME_EFFECTIVE}")"
+  fi
+  if [ "$ENABLE_TUIC_ENV" = "true" ]; then
+    echo "[node] tuic://${VLESS_UUID_ENV}:$(uri_encode "$TUIC_PASSWORD_ENV")@${host}:${TUIC_PORT_ENV}?sni=${host}&alpn=h3&congestion_control=bbr#$(uri_encode "tuic-${NODE_NAME_EFFECTIVE}")"
   fi
   if [ "$ENABLE_SS_ENV" = "true" ]; then
     tag="$(jq -r '.inbounds[] | select(.type=="shadowsocks") | .tag' "$cfg" | head -n1)"
@@ -851,6 +1038,7 @@ if [ "$WARP_AUTORECOVER_ENV" = "true" ] && [ "$WARP_MODE_ENV" != "direct" ]; the
 fi
 
 elapsed_seconds=0
+ruleset_elapsed_seconds=0
 while true; do
   if [ "$STOP_REQUESTED" = "true" ]; then
     exit 0
@@ -869,6 +1057,11 @@ while true; do
   elapsed_seconds=$((elapsed_seconds + PROCESS_CHECK_INTERVAL_SECONDS))
   if [ $((elapsed_seconds % MANUAL_CERT_CHECK_INTERVAL)) -lt "$PROCESS_CHECK_INTERVAL_SECONDS" ]; then
     reload_manual_cert_if_changed
+  fi
+  ruleset_elapsed_seconds=$((ruleset_elapsed_seconds + PROCESS_CHECK_INTERVAL_SECONDS))
+  if [ "$ruleset_elapsed_seconds" -ge "$RULESET_REFRESH_INTERVAL" ]; then
+    ruleset_elapsed_seconds=0
+    download_rulesets
   fi
   if [ "$elapsed_seconds" -ge "$TLS_RENEW_INTERVAL_ENV" ]; then
     elapsed_seconds=0

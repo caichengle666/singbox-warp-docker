@@ -68,6 +68,16 @@ These can be changed if needed, but the service can still start with defaults:
 - `.env` `ENABLE_VLESS`, default `true`
 - `.env` `ENABLE_ANYTLS`, default `false`
 - `.env` `ENABLE_SS`, default `false`
+- `.env` `ENABLE_TUIC`, default `false`; TUIC v5 (UDP), uses the same certificate as HY2
+- `.env` `TUIC_PORT`, default `36443` (UDP)
+- `.env` `TUIC_PASSWORD`, optional; defaults to `AUTH_UUID` (the TUIC uuid is `VLESS_UUID`)
+- `.env` `ENABLE_REALITY`, default `false`; VLESS-Reality, no certificate needed, borrows the TLS handshake of a camouflage site
+- `.env` `REALITY_PORT`, default `443`; change it if a web server already uses 443 on the host
+- `.env` `REALITY_SNI`, default `www.microsoft.com`; camouflage site, must support TLS 1.3
+- `.env` `REALITY_SHORT_ID`, optional; generated when empty. The Reality key pair is generated on first start and kept in `./data/credentials.env`
+- `.env` `WARP_SCOPE`, default `all`; `all` sends all traffic through WARP, `split` only sends the sites below through WARP and keeps the rest direct
+- `.env` `WARP_SPLIT_GEOSITE`, default `openai,anthropic,google-gemini,netflix,disney`; names from [sing-geosite](https://github.com/SagerNet/sing-geosite/tree/rule-set) without the `geosite-` prefix, downloaded to `./data/rulesets` at start and refreshed daily (a failed refresh keeps the old file)
+- `.env` `WARP_SPLIT_DOMAINS`, optional; extra domain suffixes to send through WARP, comma separated
 - `.env` `ANYTLS_PORT`, default `4443`
 - `.env` `SS_PORT`, default `48443`
 - `.env` `HY2_PORT_HOPPING`, default `false`; the deploy script maps the HY2 UDP hop ports when enabled
@@ -290,18 +300,25 @@ What this interactive script does:
 - `.env` is ignored by git
 - The main service is `sing-box`; certificate renewal is handled by a lightweight shell loop with signal forwarding and graceful shutdown
 
+## Versioned Releases
+
+- Pushing a `vX.Y.Z` tag (must equal `SCRIPT_VERSION` in `deploy.sh`) builds the image tagged `X.Y.Z`, `X.Y` and `latest`, and publishes a GitHub Release with `deploy.sh` and `deploy.sh.sha256`
+- To pin a version, set the compose `image` to `ghcr.io/caichengle666/singbox-warp-docker:X.Y.Z`
+- Versioned images are never cleaned up automatically; `latest` keeps following upstream daily
+
 ## Template Notes
 
 File used: `config/sing-box.template.json` (the file is authoritative; this section only describes its shape).
 
 This is a template, not the final runtime config. On startup the script injects ports, passwords/UUIDs, TLS paths and server name, WARP WireGuard parameters and the `MIXED` port, drops disabled inbounds, and runs `sing-box check` on the result.
 
-- Inbounds: HY2, VLESS, AnyTLS, Shadowsocks 2022 (kept per `ENABLE_*`), `mixed-in` (host-local proxy), and the container-internal `warp-probe` (127.0.0.1:18080, used to probe WARP)
+- Inbounds: HY2, VLESS, AnyTLS, Shadowsocks 2022, TUIC v5, VLESS-Reality (`reality-in`) (kept per `ENABLE_*`), `mixed-in` (host-local proxy), and the container-internal `warp-probe` (127.0.0.1:18080, used to probe WARP)
 - Outbounds: `warp` (WireGuard endpoint), `usque` (MASQUE SOCKS on 127.0.0.1:18081), `direct`
 - Route rules:
   1. `warp-probe` always goes to `warp`
   2. Connections to private/internal addresses (including the `169.254.169.254` cloud metadata service and container loopback) are rejected, so a node cannot be used to reach the server's internal network
-  3. Everything else uses `route.final`, which the entrypoint switches between `usque` / `warp` / `direct`
+  3. `WARP_SCOPE=all`: everything else uses `route.final`, which the entrypoint switches between `usque` / `warp` / `direct`
+  4. `WARP_SCOPE=split`: adds a `sniff` rule plus split rules (geosite rule sets / domain suffixes); the entrypoint switches the outbound of those rules and `route.final` stays `direct`
 
 Add custom rules after rule 2 and leave `route.final` to the script.
 
@@ -309,6 +326,7 @@ Add custom rules after rule 2 and leave `route.final` to the script.
 
 - The workflow runs on `push`, manual trigger, and a daily schedule
 - Every run renders the template and runs `sing-box check` with the latest `sing-box`; a failure stops the build and push
+- After building, CI starts the container for real (no extra capabilities), connects to HY2 / VLESS / AnyTLS / SS / Reality / TUIC with a sing-box client and fetches a public page through each, and checks private-address blocking and the local MIXED proxy; images are only pushed when all pass. Run it locally with `scripts/runtime-test.sh <image> <sing-box client>`
 - On `push` it only builds when code/config changed; on schedule it only builds when `sing-box` or `wgcf` has a new release
 - Images are pushed to `ghcr.io/<owner>/singbox-warp-docker`
 

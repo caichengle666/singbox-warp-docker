@@ -92,6 +92,16 @@ swd
 - `.env` `ENABLE_VLESS`，默认 `true`
 - `.env` `ENABLE_ANYTLS`，默认 `false`
 - `.env` `ENABLE_SS`，默认 `false`
+- `.env` `ENABLE_TUIC`，默认 `false`；TUIC v5（UDP），使用与 HY2 相同的证书
+- `.env` `TUIC_PORT`，默认 `36443`（UDP）
+- `.env` `TUIC_PASSWORD`，可选；留空时使用 `AUTH_UUID`（TUIC 的 uuid 同 `VLESS_UUID`）
+- `.env` `ENABLE_REALITY`，默认 `false`；VLESS-Reality，不使用证书，借用伪装站点的 TLS 握手
+- `.env` `REALITY_PORT`，默认 `443`；宿主机 443 已被 Web 服务占用时请改端口
+- `.env` `REALITY_SNI`，默认 `www.microsoft.com`；伪装站点，需支持 TLS 1.3，建议选与 VPS 同地区、访问稳定的大站
+- `.env` `REALITY_SHORT_ID`，可选；留空时自动生成。Reality 密钥对首次启动自动生成，保存在 `./data/credentials.env`
+- `.env` `WARP_SCOPE`，默认 `all`；`all` 全部流量走 WARP，`split` 只有下面列出的站点走 WARP，其余直连（WARP 故障时只影响这些站点）
+- `.env` `WARP_SPLIT_GEOSITE`，默认 `openai,anthropic,google-gemini,netflix,disney`；[sing-geosite](https://github.com/SagerNet/sing-geosite/tree/rule-set) 里的名称（去掉 `geosite-` 前缀），启动时下载到 `./data/rulesets`，每天刷新，下载失败沿用旧文件
+- `.env` `WARP_SPLIT_DOMAINS`，可选；额外走 WARP 的域名后缀，逗号分隔，例如 `ipinfo.io,example.com`
 - `.env` `AUTH_UUID`，统一设置 `hy2 password` 和 `vless uuid`
 - `.env` `HY2_PASSWORD`，单独覆盖 `hy2 password`
 - `.env` `VLESS_UUID`，单独覆盖 `vless uuid`
@@ -309,7 +319,7 @@ curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/m
 
 说明：
 
-- 当前管理脚本版本：`2.2.3`；运行 `swd --version` 可查看线上版本
+- 当前管理脚本版本：`2.3.0`；运行 `swd --version` 可查看线上版本
 - 普通用户运行时会自动请求 `sudo` 权限并以 root 重新启动；`--help` 和 `--version` 不需要提权
 - 脚本只提供交互模式（执行后逐项提示输入）
 - 菜单提供安装、镜像/管理脚本更新、配置修改、节点二维码、状态总览、诊断、日志、重启、备份恢复、自动更新、回滚和卸载
@@ -347,18 +357,25 @@ chmod +x ./deploy.sh
 - `.env` 已加入 `.gitignore`
 - 容器主服务是 `sing-box`，证书续期由轻量 shell 循环托管，并已添加信号转发与优雅停机
 
+## 版本化发布
+
+- 推送 `vX.Y.Z` 标签（必须等于 `deploy.sh` 的 `SCRIPT_VERSION`）会构建镜像并打上 `X.Y.Z`、`X.Y` 和 `latest` 标签，同时发布 GitHub Release，附带 `deploy.sh` 和 `deploy.sh.sha256`
+- 想固定版本：把 compose 里的 `image` 改成 `ghcr.io/caichengle666/singbox-warp-docker:X.Y.Z`
+- 带版本号的镜像不会被自动清理；`latest` 仍按原方式每天跟随上游更新
+
 ## 配置模板说明
 
 使用文件：`config/sing-box.template.json`（以该文件为准，这里只讲结构）。
 
 这是一份模板，不是最终运行文件。启动时脚本会自动注入端口、密码/UUID、TLS 证书路径与域名、WARP WireGuard 参数和 `MIXED` 端口，并删除未启用的入站，渲染后先跑一遍 `sing-box check`。
 
-- 入站：HY2、VLESS、AnyTLS、Shadowsocks 2022（按 `ENABLE_*` 保留），`mixed-in`（宿主机本地代理），以及仅容器内使用的 `warp-probe`（127.0.0.1:18080，用于探测 WARP）
+- 入站：HY2、VLESS、AnyTLS、Shadowsocks 2022、TUIC v5、VLESS-Reality（`reality-in`）（按 `ENABLE_*` 保留），`mixed-in`（宿主机本地代理），以及仅容器内使用的 `warp-probe`（127.0.0.1:18080，用于探测 WARP）
 - 出站：`warp`（WireGuard endpoint）、`usque`（MASQUE SOCKS，127.0.0.1:18081）、`direct`
 - 路由规则：
   1. `warp-probe` 固定走 `warp`
   2. 目标是私有/内网地址（含 `169.254.169.254` 云元数据、容器回环）的连接直接拒绝，避免节点被用来访问服务器内网
-  3. 其余流量走 `route.final`，由启动脚本在 `usque` / `warp` / `direct` 之间切换
+  3. `WARP_SCOPE=all`：其余流量走 `route.final`，由启动脚本在 `usque` / `warp` / `direct` 之间切换
+  4. `WARP_SCOPE=split`：额外加入 `sniff` 和分流规则（geosite 规则集 / 域名后缀），脚本切换的是这些规则的出口，`route.final` 固定为 `direct`
 
 如需自定义规则，请加在第 2 条之后，并保持 `route.final` 由脚本管理。
 
@@ -366,6 +383,7 @@ chmod +x ./deploy.sh
 
 - Workflow 在 `push`、手动触发和每日定时任务时运行
 - 每次都会用最新 `sing-box` 对渲染后的模板跑 `sing-box check`，不通过就不会构建和推送
+- 构建镜像后先在 CI 里真实启动容器（不加任何额外 capability），用 sing-box 客户端逐个连接 HY2 / VLESS / AnyTLS / SS / Reality / TUIC 并访问外网，同时检查私网拦截和本地 MIXED 代理；全部通过才推送。本地可运行 `scripts/runtime-test.sh <镜像> <sing-box 客户端>`
 - `push` 时只有代码/配置改动才构建；定时任务只有 `sing-box` 或 `wgcf` 出新版时才构建
 - 镜像推送到 `ghcr.io/<owner>/singbox-warp-docker`
 
@@ -373,4 +391,4 @@ chmod +x ./deploy.sh
 
 - 不要把私钥、证书、`.env` 直接提交进仓库
 - 使用自动 TLS 时，`CF_Token` 只给最小权限
-- 当前管理脚本版本：`2.2.3`；运行 `swd --version` 可查看线上版本
+- 当前管理脚本版本：`2.3.0`；运行 `swd --version` 可查看线上版本

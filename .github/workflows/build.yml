@@ -3,6 +3,7 @@ name: build-and-push
 on:
   push:
     branches: ["main"]
+    tags: ["v*"]
   workflow_dispatch:
   schedule:
     - cron: "15 2 * * *"
@@ -15,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: write
-      contents: read
+      contents: write
       packages: write
     steps:
       - name: Checkout
@@ -24,12 +25,12 @@ jobs:
       - name: Validate shell scripts
         run: |
           set -euo pipefail
-          bash -n deploy.sh entrypoint.sh
+          bash -n deploy.sh entrypoint.sh scripts/*.sh
           if ! command -v shellcheck >/dev/null 2>&1; then
             sudo apt-get update -y
             sudo apt-get install -y shellcheck
           fi
-          shellcheck -S warning -e SC2034 deploy.sh entrypoint.sh
+          shellcheck -S warning -e SC2034 deploy.sh entrypoint.sh scripts/*.sh
           expected_version="$(sed -n 's/^SCRIPT_VERSION="\([^"]*\)"/\1/p' deploy.sh | head -n1)"
           test -n "$expected_version"
           version="$(bash deploy.sh --version)"
@@ -37,13 +38,20 @@ jobs:
           output="$(printf '15\n' | FORCE_STDIN=1 bash deploy.sh)"
           grep -Fq '正在通过 sudo 请求权限' <<<"$output"
           grep -Fq '[deploy] 退出' <<<"$output"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            # Release tags follow the manager version so the two never drift.
+            test "${{ github.ref_name }}" = "v${expected_version}" || {
+              echo "::error::tag ${{ github.ref_name }} does not match SCRIPT_VERSION ${expected_version}"
+              exit 1
+            }
+          fi
 
       - name: Validate Compose configuration
         run: docker compose --env-file .env.example config -q
 
       - name: Detect code changes
         id: changes
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref_type == 'branch'
         uses: dorny/paths-filter@v4
         with:
           filters: |
@@ -90,6 +98,12 @@ jobs:
             exit 0
           fi
 
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Release tag ${{ github.ref_name }}: building"
+            exit 0
+          fi
+
           if [ "${{ github.event_name }}" = "push" ]; then
             if [ "${{ steps.changes.outputs.code }}" = "true" ]; then
               echo "should_build=true" >> "$GITHUB_OUTPUT"
@@ -126,6 +140,30 @@ jobs:
         if: steps.gate.outputs.should_build == 'true'
         uses: docker/setup-buildx-action@v4
 
+      - name: Build test image (amd64)
+        if: steps.gate.outputs.should_build == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          platforms: linux/amd64
+          tags: singbox-warp-docker:ci-test
+          provenance: false
+          sbom: false
+          build-args: |
+            SINGBOX_VERSION=${{ steps.versions.outputs.singbox }}
+            WGCF_VERSION=${{ steps.versions.outputs.wgcf }}
+            USQUE_VERSION=4.2.1
+
+      - name: Runtime test (every protocol end to end)
+        if: steps.gate.outputs.should_build == 'true'
+        run: |
+          set -euo pipefail
+          version="${{ steps.versions.outputs.singbox }}"
+          bash scripts/runtime-test.sh singbox-warp-docker:ci-test "/tmp/sing-box-${version}-linux-amd64/sing-box"
+
       - name: Docker metadata
         if: steps.gate.outputs.should_build == 'true'
         id: meta
@@ -134,6 +172,8 @@ jobs:
           images: ${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=raw,value=sb-${{ steps.versions.outputs.singbox }}
             type=raw,value=wgcf-${{ steps.versions.outputs.wgcf }}
             type=sha
@@ -155,6 +195,30 @@ jobs:
             SINGBOX_VERSION=${{ steps.versions.outputs.singbox }}
             WGCF_VERSION=${{ steps.versions.outputs.wgcf }}
             USQUE_VERSION=4.2.1
+
+      - name: Publish GitHub release
+        if: steps.gate.outputs.should_build == 'true' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          sha256sum deploy.sh > deploy.sh.sha256
+          notes="$(mktemp)"
+          {
+            echo "镜像 / Image: \`${IMAGE_NAME}:${tag#v}\`"
+            echo
+            echo "- sing-box ${{ steps.versions.outputs.singbox }}"
+            echo "- wgcf ${{ steps.versions.outputs.wgcf }}"
+            echo
+            echo "固定版本部署：把 compose 里的 image 改成 \`${IMAGE_NAME}:${tag#v}\`。"
+            echo "deploy.sh 校验：\`sha256sum -c deploy.sh.sha256\`"
+          } > "$notes"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" deploy.sh deploy.sh.sha256 --clobber
+          else
+            gh release create "$tag" deploy.sh deploy.sh.sha256 --title "$tag" --notes-file "$notes" --generate-notes
+          fi
 
       - name: Cleanup old GHCR versions (keep latest 3)
         if: steps.gate.outputs.should_build == 'true'
@@ -185,7 +249,7 @@ jobs:
             sort_by(.created_at) |
             reverse |
             .[] |
-            select(((.metadata.container.tags // []) | any(. == "latest" or . == $sb or . == $wgcf or . == $sha)) | not) |
+            select(((.metadata.container.tags // []) | any(. == "latest" or . == $sb or . == $wgcf or . == $sha or test("^[0-9]+[.][0-9]+"))) | not) |
             [.id, .created_at, (.metadata.container.tags // [] | join(","))] |
             @tsv
           ' "$versions_file")"
