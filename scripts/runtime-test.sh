@@ -30,12 +30,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Annotations are the only part of a run visible without signing in, so
+# failures are reported as one annotation carrying the container log tail.
+annotate_log() {
+  local log
+  log="$(docker logs "$NAME" 2>&1 | tail -n 60 | sed 's/\x1b\[[0-9;]*m//g' || true)"
+  log="${log//'%'/'%25'}"
+  log="${log//$'\r'/}"
+  log="${log//$'\n'/'%0A'}"
+  echo "::error title=container log::${log}"
+}
+
 fail() {
-  echo "::error::$*" >&2
-  echo "----- container log -----" >&2
-  docker logs "$NAME" 2>&1 | tail -n 80 >&2 || true
+  echo "::error title=runtime test::$*"
+  annotate_log
+  echo "----- container log -----"
+  docker logs "$NAME" 2>&1 | tail -n 80 || true
   exit 1
 }
+trap 'fail "command failed at line $LINENO: $BASH_COMMAND"' ERR
 
 mkdir -p "$work/certs" "$work/data"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
