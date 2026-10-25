@@ -115,6 +115,23 @@
       }
     },
     {
+      "type": "vless",
+      "tag": "vless-ws-in",
+      "listen": "::",
+      "listen_port": __WS_PORT__,
+      "users": [
+        {
+          "uuid": "__VLESS_UUID__"
+        }
+      ],
+      "transport": {
+        "type": "ws",
+        "path": "/ws",
+        "max_early_data": 2048,
+        "early_data_header_name": "Sec-WebSocket-Protocol"
+      }
+    },
+    {
       "type": "mixed",
       "tag": "warp-probe",
       "listen": "127.0.0.1",

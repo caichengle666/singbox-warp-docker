@@ -1,0 +1,91 @@
+# 隧道模式：适合没有公网入站端口、只能通过 Cloudflare Tunnel 进来的机器。
+# 只有两个容器：本项目（只开 VLESS-WS，不映射任何公网端口）+ cloudflared。
+#
+# 使用步骤：
+#   1. Cloudflare Zero Trust -> Networks -> Tunnels 新建隧道，复制 token
+#   2. 在隧道的 Public Hostname 里添加：
+#        Hostname: 你的域名（例如 node.example.com）
+#        Service : HTTP  singbox-warp:8080   （端口与 WS_PORT 一致）
+#   3. 在同目录 .env 写入：
+#        CF_TUNNEL_TOKEN=<上一步的 token>
+#        WS_HOST=node.example.com
+#   4. docker compose -f docker-compose.tunnel.yml up -d
+#   5. docker logs singbox-warp 查看节点链接（vless://...type=ws...）
+#
+# 客户端连的是 Cloudflare 边缘的 443/TLS，容器内是明文 WS，不需要证书。
+# UDP 协议（HY2/TUIC）和直连 TLS/Reality 无法穿过隧道，这里不启用。
+services:
+  singbox-warp:
+    image: ghcr.io/caichengle666/singbox-warp-docker:latest
+    container_name: singbox-warp
+    restart: unless-stopped
+    init: true
+    ports:
+      # 只给本机用的 HTTP+SOCKS5 代理，不对外
+      - "127.0.0.1:${MIXED_PORT:-1080}:${MIXED_PORT:-1080}/tcp"
+    volumes:
+      - ./data:/var/lib/wgcf
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"$(cat /run/sing-box.pid)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      - ENABLE_HY2=false
+      - ENABLE_VLESS=false
+      - ENABLE_ANYTLS=false
+      - ENABLE_SS=false
+      - ENABLE_TUIC=false
+      - ENABLE_REALITY=false
+      - ENABLE_WS=true
+      - WS_PORT=${WS_PORT:-8080}
+      # 留空则首次启动随机生成并保存在 ./data/credentials.env
+      - WS_PATH=${WS_PATH:-}
+      # 隧道的公网域名，用于生成节点链接
+      - WS_HOST=${WS_HOST:-}
+      # 可选：客户端实际连接的地址（优选 IP/域名），留空用 WS_HOST
+      - WS_ADDRESS=${WS_ADDRESS:-}
+      - AUTO_TLS=false
+      - NODE_NAME=${NODE_NAME:-}
+      - AUTH_UUID=${AUTH_UUID:-}
+      - VLESS_UUID=${VLESS_UUID:-}
+      - MIXED_PORT=${MIXED_PORT:-1080}
+      - WARP_LICENSE_KEY=${WARP_LICENSE_KEY:-}
+      - WARP_MODE=${WARP_MODE:-auto}
+      - WARP_SCOPE=${WARP_SCOPE:-all}
+      - WARP_SPLIT_GEOSITE=${WARP_SPLIT_GEOSITE-openai,anthropic,google-gemini,netflix,disney}
+      - WARP_SPLIT_DOMAINS=${WARP_SPLIT_DOMAINS:-}
+      - WARP_AUTORECOVER=${WARP_AUTORECOVER:-true}
+      - WARP_PROBE_INTERVAL=${WARP_PROBE_INTERVAL:-60}
+      - USQUE_HTTP2=${USQUE_HTTP2:-true}
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: singbox-warp-cloudflared
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      # token 通过环境变量传入，不出现在进程参数里
+      - TUNNEL_TOKEN=${CF_TUNNEL_TOKEN:?CF_TUNNEL_TOKEN is required}
+      # auto/quic/http2；机器 UDP 7844 不通时改成 http2
+      - TUNNEL_TRANSPORT_PROTOCOL=${CF_TUNNEL_PROTOCOL:-auto}
+    depends_on:
+      singbox-warp:
+        condition: service_started
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.3.0"
+SCRIPT_VERSION="2.4.0"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -31,6 +31,16 @@ REALITY_PORT="${REALITY_PORT:-443}"
 ENABLE_REALITY="${ENABLE_REALITY:-false}"
 REALITY_SNI="${REALITY_SNI:-www.microsoft.com}"
 REALITY_SHORT_ID="${REALITY_SHORT_ID:-}"
+# DEPLOY_MODE=direct: 公网端口直连（默认）；tunnel: 只开 VLESS-WS，由 cloudflared 隧道进入
+DEPLOY_MODE="${DEPLOY_MODE:-direct}"
+ENABLE_WS="${ENABLE_WS:-false}"
+WS_PORT="${WS_PORT:-8080}"
+WS_PATH="${WS_PATH:-}"
+WS_HOST="${WS_HOST:-}"
+WS_ADDRESS="${WS_ADDRESS:-}"
+CF_TUNNEL_TOKEN="${CF_TUNNEL_TOKEN:-}"
+CF_TUNNEL_PROTOCOL="${CF_TUNNEL_PROTOCOL:-auto}"
+CLOUDFLARED_IMAGE="${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}"
 TUIC_PASSWORD="${TUIC_PASSWORD:-}"
 WARP_SCOPE="${WARP_SCOPE:-all}"
 WARP_SPLIT_GEOSITE="${WARP_SPLIT_GEOSITE-openai,anthropic,google-gemini,netflix,disney}"
@@ -134,6 +144,14 @@ Environment:
   ENABLE_REALITY  true/false，默认 false（VLESS-Reality，不需要证书）
   REALITY_PORT    默认 443
   REALITY_SNI     Reality 伪装站点，默认 www.microsoft.com
+  DEPLOY_MODE     direct/tunnel，默认 direct；tunnel 适合没有公网入站端口的机器
+  ENABLE_WS       true/false，VLESS-WS 入站（隧道模式自动开启，不需要证书）
+  WS_PORT         默认 8080，只在 Docker 内网监听
+  WS_PATH         留空自动生成随机路径
+  WS_HOST         隧道的公网域名，用于生成节点链接
+  WS_ADDRESS      可选，客户端实际连接的地址（优选 IP/域名）
+  CF_TUNNEL_TOKEN 隧道模式必填，Cloudflare Tunnel token
+  CF_TUNNEL_PROTOCOL auto/quic/http2，默认 auto
   WARP_SCOPE      all/split，默认 all；split 时只有指定站点走 WARP
   WARP_SPLIT_GEOSITE 逗号分隔的 geosite 名称，默认 openai,anthropic,google-gemini,netflix,disney
   WARP_SPLIT_DOMAINS 逗号分隔的额外域名后缀，可选
@@ -793,7 +811,7 @@ load_existing_env() {
     key="${key%$'\r'}"
     value="${value%$'\r'}"
     case "$key" in
-      HY2_PORT|HY2_PORT_HOPPING|HY2_HOP_PORTS|VLESS_PORT|ANYTLS_PORT|SS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|ENABLE_ANYTLS|ENABLE_SS|TUIC_PORT|ENABLE_TUIC|TUIC_PASSWORD|REALITY_PORT|ENABLE_REALITY|REALITY_SNI|REALITY_SHORT_ID|WARP_SCOPE|WARP_SPLIT_GEOSITE|WARP_SPLIT_DOMAINS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|ANYTLS_PASSWORD|SS_PASSWORD|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|WARP_MODE|WARP_AUTORECOVER|WARP_PROBE_INTERVAL|USQUE_HTTP2|CF_Token|CF_Account_ID|CF_Zone_ID)
+      HY2_PORT|HY2_PORT_HOPPING|HY2_HOP_PORTS|VLESS_PORT|ANYTLS_PORT|SS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|ENABLE_ANYTLS|ENABLE_SS|TUIC_PORT|ENABLE_TUIC|TUIC_PASSWORD|REALITY_PORT|ENABLE_REALITY|REALITY_SNI|REALITY_SHORT_ID|WARP_SCOPE|WARP_SPLIT_GEOSITE|WARP_SPLIT_DOMAINS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|ANYTLS_PASSWORD|SS_PASSWORD|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|WARP_MODE|WARP_AUTORECOVER|WARP_PROBE_INTERVAL|USQUE_HTTP2|CF_Token|CF_Account_ID|CF_Zone_ID|DEPLOY_MODE|ENABLE_WS|WS_PORT|WS_PATH|WS_HOST|WS_ADDRESS|CF_TUNNEL_TOKEN|CF_TUNNEL_PROTOCOL|CLOUDFLARED_IMAGE)
         printf -v "$key" '%s' "$value"
         ;;
     esac
@@ -816,6 +834,20 @@ collect_bootstrap_inputs() {
       return 1
     fi
   fi
+
+  printf "\n部署模式\n" >&2
+  printf "direct = 公网端口直连（HY2/VLESS/TUIC 等，需要证书）\n" >&2
+  printf "tunnel = 隧道模式，只开 VLESS-WS，通过 Cloudflare Tunnel 进入（适合没有公网入站端口的机器）\n" >&2
+  DEPLOY_MODE="$(ask_input "部署模式 (direct/tunnel)" "$DEPLOY_MODE")"
+  while [[ "$DEPLOY_MODE" != "direct" && "$DEPLOY_MODE" != "tunnel" ]]; do
+    err "部署模式只能是 direct 或 tunnel"
+    DEPLOY_MODE="$(ask_input "部署模式 (direct/tunnel)" "direct")"
+  done
+  if [[ "$DEPLOY_MODE" == "tunnel" ]]; then
+    collect_tunnel_inputs
+    return 0
+  fi
+  ENABLE_WS="false"
 
   printf "\n自动 TLS 配置\n" >&2
   printf "需要 Cloudflare API Token（Zone / DNS / Edit 权限）。\n" >&2
@@ -869,14 +901,7 @@ collect_bootstrap_inputs() {
     REALITY_SNI="$(ask_input "Reality 伪装站点 (需支持 TLS 1.3)" "$REALITY_SNI")"
   fi
 
-  printf "\nWARP 分流\n" >&2
-  printf "all = 全部流量走 WARP；split = 只有指定站点走 WARP，其余直连。\n" >&2
-  WARP_SCOPE="$(ask_input "WARP 范围 (all/split)" "$WARP_SCOPE")"
-  if [[ "$WARP_SCOPE" == "split" ]]; then
-    WARP_SPLIT_GEOSITE="$(ask_input "走 WARP 的 geosite (逗号分隔)" "$WARP_SPLIT_GEOSITE")"
-    WARP_SPLIT_DOMAINS="$(ask_input "额外走 WARP 的域名后缀 (逗号分隔，可留空)" "$WARP_SPLIT_DOMAINS")"
-  fi
-  MIXED_PORT="$(ask_input "本机 Mixed 代理端口 (HTTP+SOCKS5，仅 127.0.0.1)" "$MIXED_PORT")"
+  collect_warp_inputs
 
   if [[ "$(normalize_bool "$(ask_choice "配置高级选项 (y/n)" "n")")" == "true" ]]; then
     IMAGE="$(ask_input "镜像地址" "$IMAGE")"
@@ -889,7 +914,74 @@ collect_bootstrap_inputs() {
   fi
 }
 
+collect_warp_inputs() {
+  printf "\nWARP 分流\n" >&2
+  printf "all = 全部流量走 WARP；split = 只有指定站点走 WARP，其余直连。\n" >&2
+  WARP_SCOPE="$(ask_input "WARP 范围 (all/split)" "$WARP_SCOPE")"
+  if [[ "$WARP_SCOPE" == "split" ]]; then
+    WARP_SPLIT_GEOSITE="$(ask_input "走 WARP 的 geosite (逗号分隔)" "$WARP_SPLIT_GEOSITE")"
+    WARP_SPLIT_DOMAINS="$(ask_input "额外走 WARP 的域名后缀 (逗号分隔，可留空)" "$WARP_SPLIT_DOMAINS")"
+  fi
+  MIXED_PORT="$(ask_input "本机 Mixed 代理端口 (HTTP+SOCKS5，仅 127.0.0.1)" "$MIXED_PORT")"
+}
+
+# 隧道模式只需要 tunnel token 和公网域名；其它入站全部关闭，也不需要证书。
+collect_tunnel_inputs() {
+  ENABLE_WS="true"
+  ENABLE_HY2="false"
+  ENABLE_VLESS="false"
+  ENABLE_ANYTLS="false"
+  ENABLE_SS="false"
+  ENABLE_TUIC="false"
+  ENABLE_REALITY="false"
+  HY2_PORT_HOPPING="false"
+  HY2_HOP_PORTS=""
+  AUTO_TLS="false"
+  AUTO_DOMAIN="false"
+
+  printf "\n隧道配置\n" >&2
+  printf "在 Cloudflare Zero Trust -> Networks -> Tunnels 新建隧道并复制 token。\n" >&2
+  printf "Public Hostname 的 Service 填: HTTP  singbox-warp:<WS 端口>\n" >&2
+  printf "Tunnel token 将明文显示，输入后请确认终端没有旁观者。\n" >&2
+  CF_TUNNEL_TOKEN="$(ask_input "Cloudflare Tunnel token (可见输入)" "$CF_TUNNEL_TOKEN")"
+  while [[ -z "$CF_TUNNEL_TOKEN" ]]; do
+    err "Tunnel token 不能为空"
+    CF_TUNNEL_TOKEN="$(ask_input "Cloudflare Tunnel token (可见输入)" "$CF_TUNNEL_TOKEN")"
+  done
+  WS_HOST="$(ask_input "隧道公网域名 (例如 node.example.com)" "$WS_HOST")"
+  while [[ -z "$WS_HOST" ]]; do
+    err "隧道公网域名不能为空"
+    WS_HOST="$(ask_input "隧道公网域名 (例如 node.example.com)" "$WS_HOST")"
+  done
+  WS_PORT="$(ask_input "WS 端口 (仅 Docker 内网，需与隧道 Service 一致)" "$WS_PORT")"
+  WS_ADDRESS="$(ask_input "客户端连接地址 (优选 IP/域名，可留空)" "$WS_ADDRESS")"
+
+  collect_warp_inputs
+
+  if [[ "$(normalize_bool "$(ask_choice "配置高级选项 (y/n)" "n")")" == "true" ]]; then
+    IMAGE="$(ask_input "镜像地址" "$IMAGE")"
+    AUTH_UUID="$(ask_input "AUTH_UUID (留空自动生成)" "$AUTH_UUID")"
+    WS_PATH="$(ask_input "WS 路径 (留空自动生成)" "$WS_PATH")"
+    CF_TUNNEL_PROTOCOL="$(ask_input "隧道协议 (auto/quic/http2)" "$CF_TUNNEL_PROTOCOL")"
+    WARP_LICENSE_KEY="$(ask_secret "WARP_LICENSE_KEY (可选)" "$WARP_LICENSE_KEY")"
+  fi
+}
+
 confirm_config() {
+  if [[ "$DEPLOY_MODE" == "tunnel" ]]; then
+    printf "\n配置摘要（隧道模式）\n" >&2
+    printf "  部署目录: %s\n" "$APP_DIR" >&2
+    printf "  公网域名: %s\n" "$WS_HOST" >&2
+    printf "  WS 端口: %s (仅 Docker 内网)\n" "$WS_PORT" >&2
+    printf "  WS 路径: %s\n" "${WS_PATH:-自动生成}" >&2
+    if [[ -n "$WS_ADDRESS" ]]; then printf "  客户端连接地址: %s\n" "$WS_ADDRESS" >&2; fi
+    printf "  Tunnel token: 已配置（不会显示）\n" >&2
+    printf "  隧道协议: %s\n" "$CF_TUNNEL_PROTOCOL" >&2
+    printf "  WARP 范围: %s%s\n" "$WARP_SCOPE" "$([[ "$WARP_SCOPE" == "split" ]] && printf ' (%s %s)' "$WARP_SPLIT_GEOSITE" "$WARP_SPLIT_DOMAINS")" >&2
+    printf "  Mixed 端口: %s (仅本机)\n" "$MIXED_PORT" >&2
+    [[ "$(normalize_bool "$(ask_choice "确认并继续 (y/n)" "y")")" == "true" ]]
+    return
+  fi
   local domain_label="$TLS_DOMAIN"
   [[ "$AUTO_DOMAIN" == "true" ]] && domain_label="自动生成 (*.$BASE_DOMAIN)"
   printf "\n配置摘要\n" >&2
@@ -1048,6 +1140,38 @@ validate_config() {
   validate_true_false "ENABLE_SS" "$ENABLE_SS"
   validate_true_false "ENABLE_TUIC" "$ENABLE_TUIC"
   validate_true_false "ENABLE_REALITY" "$ENABLE_REALITY"
+  validate_true_false "ENABLE_WS" "$ENABLE_WS"
+  if [[ "$DEPLOY_MODE" != "direct" && "$DEPLOY_MODE" != "tunnel" ]]; then
+    err "DEPLOY_MODE 必须是 direct 或 tunnel，当前值: $DEPLOY_MODE"
+    exit 1
+  fi
+  if [[ "$DEPLOY_MODE" == "tunnel" ]]; then
+    [[ "$ENABLE_WS" == "true" ]] || { err "隧道模式必须启用 ENABLE_WS"; exit 1; }
+    [[ "$ENABLE_HY2" != "true" && "$ENABLE_VLESS" != "true" && "$ENABLE_ANYTLS" != "true" &&
+       "$ENABLE_SS" != "true" && "$ENABLE_TUIC" != "true" && "$ENABLE_REALITY" != "true" ]] || {
+      err "隧道模式只支持 VLESS-WS；其它协议无法穿过 Cloudflare Tunnel，请关闭"
+      exit 1
+    }
+    [[ -n "$CF_TUNNEL_TOKEN" ]] || { err "隧道模式必须填写 CF_TUNNEL_TOKEN"; exit 1; }
+    validate_token_value "CF_TUNNEL_TOKEN" "$CF_TUNNEL_TOKEN"
+    [[ -n "$WS_HOST" ]] || { err "隧道模式必须填写 WS_HOST（隧道公网域名）"; exit 1; }
+    case "$CF_TUNNEL_PROTOCOL" in
+      auto|quic|http2) ;;
+      *) err "CF_TUNNEL_PROTOCOL 必须是 auto、quic 或 http2"; exit 1 ;;
+    esac
+    validate_env_value "CLOUDFLARED_IMAGE" "$CLOUDFLARED_IMAGE"
+  fi
+  if [[ "$ENABLE_WS" == "true" ]]; then
+    validate_port "WS_PORT" "$WS_PORT"
+    if [[ -n "$WS_PATH" ]]; then
+      [[ "$WS_PATH" =~ ^/[A-Za-z0-9._~/-]*$ && ${#WS_PATH} -le 128 ]] || {
+        err "WS_PATH 必须以 / 开头，只能包含字母、数字及 . _ ~ / -（最长 128）"
+        exit 1
+      }
+    fi
+    [[ -z "$WS_HOST" || "$WS_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || { err "WS_HOST 必须是域名: $WS_HOST"; exit 1; }
+    [[ -z "$WS_ADDRESS" || "$WS_ADDRESS" =~ ^[A-Za-z0-9.:-]+$ ]] || { err "WS_ADDRESS 必须是域名或 IP: $WS_ADDRESS"; exit 1; }
+  fi
   validate_true_false "HY2_PORT_HOPPING" "$HY2_PORT_HOPPING"
   validate_true_false "AUTO_DOMAIN" "$AUTO_DOMAIN"
   validate_bool "$AUTO_TLS"
@@ -1115,16 +1239,19 @@ validate_config() {
   validate_secret_value "SS_PASSWORD" "$SS_PASSWORD"
   validate_secret_value "TUIC_PASSWORD" "$TUIC_PASSWORD"
   validate_env_value "WARP_LICENSE_KEY" "$WARP_LICENSE_KEY"
-  validate_token_value "CF_Token" "$CF_Token"
+  if [[ "$AUTO_TLS" == "true" || -n "$CF_Token" ]]; then
+    validate_token_value "CF_Token" "$CF_Token"
+  fi
   validate_env_value "CF_Account_ID" "$CF_Account_ID"
   validate_env_value "CF_Zone_ID" "$CF_Zone_ID"
   if [[ "$ENABLE_HY2" != "true" && "$ENABLE_VLESS" != "true" &&
         "$ENABLE_ANYTLS" != "true" && "$ENABLE_SS" != "true" &&
-        "$ENABLE_TUIC" != "true" && "$ENABLE_REALITY" != "true" ]]; then
-    err "至少要启用一种协议 (ENABLE_HY2/ENABLE_VLESS/ENABLE_ANYTLS/ENABLE_SS/ENABLE_TUIC/ENABLE_REALITY)"
+        "$ENABLE_TUIC" != "true" && "$ENABLE_REALITY" != "true" &&
+        "$ENABLE_WS" != "true" ]]; then
+    err "至少要启用一种协议 (ENABLE_HY2/ENABLE_VLESS/ENABLE_ANYTLS/ENABLE_SS/ENABLE_TUIC/ENABLE_REALITY/ENABLE_WS)"
     exit 1
   fi
-  if [[ "$ENABLE_VLESS" == "true" || "$ENABLE_REALITY" == "true" || "$ENABLE_TUIC" == "true" ]]; then
+  if [[ "$ENABLE_VLESS" == "true" || "$ENABLE_REALITY" == "true" || "$ENABLE_TUIC" == "true" || "$ENABLE_WS" == "true" ]]; then
     local effective_vless_uuid="${VLESS_UUID:-$AUTH_UUID}"
     if [[ -n "$effective_vless_uuid" ]] &&
        ! [[ "$effective_vless_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
@@ -1139,6 +1266,7 @@ validate_config() {
   [[ "$ENABLE_SS" == "true" ]] && enabled_ports+=("Shadowsocks:$SS_PORT")
   [[ "$ENABLE_TUIC" == "true" ]] && enabled_ports+=("TUIC:$TUIC_PORT")
   [[ "$ENABLE_REALITY" == "true" ]] && enabled_ports+=("Reality:$REALITY_PORT")
+  [[ "$ENABLE_WS" == "true" ]] && enabled_ports+=("WS:$WS_PORT")
   enabled_ports+=("Mixed:$MIXED_PORT")
   local port_item port_value seen_ports=""
   for port_item in "${enabled_ports[@]}"; do
@@ -1150,7 +1278,10 @@ validate_config() {
     seen_ports="$seen_ports $port_value"
   done
 
-  if [[ "$AUTO_TLS" == "true" ]]; then
+  if [[ "$ENABLE_HY2" != "true" && "$ENABLE_VLESS" != "true" &&
+        "$ENABLE_ANYTLS" != "true" && "$ENABLE_TUIC" != "true" ]]; then
+    : # 没有需要证书的入站（隧道 / Reality / SS），跳过证书检查
+  elif [[ "$AUTO_TLS" == "true" ]]; then
     if [[ "$AUTO_DOMAIN" != "true" ]]; then
       [[ -n "$TLS_DOMAIN" ]] || { err "AUTO_TLS=true 且 AUTO_DOMAIN=false 时必须填写 TLS_DOMAIN"; exit 1; }
     fi
@@ -1169,7 +1300,85 @@ validate_config() {
   resolve_auth_values
 }
 
+write_tunnel_compose() {
+  cat >"$COMPOSE_FILE" <<EOF
+services:
+  singbox-warp:
+    image: ${IMAGE}
+    container_name: singbox-warp
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:\${MIXED_PORT:-1080}:\${MIXED_PORT:-1080}/tcp"
+    volumes:
+      - ./data:/var/lib/wgcf
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"\$(cat /run/sing-box.pid)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      - ENABLE_HY2=false
+      - ENABLE_VLESS=false
+      - ENABLE_ANYTLS=false
+      - ENABLE_SS=false
+      - ENABLE_TUIC=false
+      - ENABLE_REALITY=false
+      - ENABLE_WS=true
+      - WS_PORT=\${WS_PORT:-8080}
+      - WS_PATH=\${WS_PATH:-}
+      - WS_HOST=\${WS_HOST:-}
+      - WS_ADDRESS=\${WS_ADDRESS:-}
+      - AUTO_TLS=false
+      - NODE_NAME=\${NODE_NAME:-}
+      - AUTH_UUID=\${AUTH_UUID:-}
+      - VLESS_UUID=\${VLESS_UUID:-}
+      - MIXED_PORT=\${MIXED_PORT:-1080}
+      - WARP_LICENSE_KEY=\${WARP_LICENSE_KEY:-}
+      - WARP_MODE=\${WARP_MODE:-auto}
+      - WARP_SCOPE=\${WARP_SCOPE:-all}
+      - WARP_SPLIT_GEOSITE=\${WARP_SPLIT_GEOSITE-openai,anthropic,google-gemini,netflix,disney}
+      - WARP_SPLIT_DOMAINS=\${WARP_SPLIT_DOMAINS:-}
+      - WARP_AUTORECOVER=\${WARP_AUTORECOVER:-true}
+      - WARP_PROBE_INTERVAL=\${WARP_PROBE_INTERVAL:-60}
+      - USQUE_HTTP2=\${USQUE_HTTP2:-true}
+
+  cloudflared:
+    image: ${CLOUDFLARED_IMAGE}
+    container_name: singbox-warp-cloudflared
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      - TUNNEL_TOKEN=\${CF_TUNNEL_TOKEN:?CF_TUNNEL_TOKEN is required}
+      - TUNNEL_TRANSPORT_PROTOCOL=\${CF_TUNNEL_PROTOCOL:-auto}
+    depends_on:
+      singbox-warp:
+        condition: service_started
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+EOF
+}
+
 write_compose() {
+  if [[ "$DEPLOY_MODE" == "tunnel" ]]; then
+    write_tunnel_compose
+    return 0
+  fi
   local ports_block=""
   if [[ "$ENABLE_HY2" == "true" ]]; then
     ports_block="${ports_block}
@@ -1253,6 +1462,11 @@ ${ports_block}
       - ENABLE_REALITY=\${ENABLE_REALITY:-false}
       - REALITY_SNI=\${REALITY_SNI:-www.microsoft.com}
       - REALITY_SHORT_ID=\${REALITY_SHORT_ID:-}
+      - ENABLE_WS=\${ENABLE_WS:-false}
+      - WS_PORT=\${WS_PORT:-8080}
+      - WS_PATH=\${WS_PATH:-}
+      - WS_HOST=\${WS_HOST:-}
+      - WS_ADDRESS=\${WS_ADDRESS:-}
       - WARP_SCOPE=\${WARP_SCOPE:-all}
       - WARP_SPLIT_GEOSITE=\${WARP_SPLIT_GEOSITE-openai,anthropic,google-gemini,netflix,disney}
       - WARP_SPLIT_DOMAINS=\${WARP_SPLIT_DOMAINS:-}
@@ -1300,6 +1514,15 @@ REALITY_PORT=$REALITY_PORT
 ENABLE_REALITY=$ENABLE_REALITY
 REALITY_SNI=$REALITY_SNI
 REALITY_SHORT_ID=$REALITY_SHORT_ID
+DEPLOY_MODE=$DEPLOY_MODE
+ENABLE_WS=$ENABLE_WS
+WS_PORT=$WS_PORT
+WS_PATH=$WS_PATH
+WS_HOST=$WS_HOST
+WS_ADDRESS=$WS_ADDRESS
+CF_TUNNEL_TOKEN=$CF_TUNNEL_TOKEN
+CF_TUNNEL_PROTOCOL=$CF_TUNNEL_PROTOCOL
+CLOUDFLARED_IMAGE=$CLOUDFLARED_IMAGE
 WARP_SCOPE=$WARP_SCOPE
 WARP_SPLIT_GEOSITE=$WARP_SPLIT_GEOSITE
 WARP_SPLIT_DOMAINS=$WARP_SPLIT_DOMAINS
@@ -1516,6 +1739,27 @@ wait_healthy() {
   return 1
 }
 
+# 隧道模式：容器健康只说明 sing-box 在跑，还要确认 cloudflared 连上了 Cloudflare。
+# 连不上通常是 token 错误或 UDP 7844 被封，只给出提示，不回滚配置。
+check_tunnel_connected() {
+  [[ "$DEPLOY_MODE" == "tunnel" ]] || return 0
+  local i
+  for i in $(seq 1 20); do
+    if docker logs --tail 200 singbox-warp-cloudflared 2>&1 | grep -q 'Registered tunnel connection'; then
+      log "隧道已连接到 Cloudflare"
+      return 0
+    fi
+    if ! docker inspect singbox-warp-cloudflared --format '{{.State.Running}}' 2>/dev/null | grep -Fxq true &&
+       (( i > 3 )); then
+      break
+    fi
+    sleep 3
+  done
+  err "cloudflared 未能连接到 Cloudflare；请检查 CF_TUNNEL_TOKEN，UDP 7844 不通时把 CF_TUNNEL_PROTOCOL 改为 http2"
+  docker logs --tail 30 singbox-warp-cloudflared 2>&1 || true
+  return 0
+}
+
 cmd_status() {
   need_cmd docker
   [[ -f "$ENV_FILE" ]] && load_existing_env
@@ -1526,7 +1770,14 @@ cmd_status() {
   printf '\n状态总览\n'
   printf '  管理脚本: v%s\n' "$SCRIPT_VERSION"
   printf '  部署目录: %s\n' "$APP_DIR"
-  printf '  域名: %s\n' "${TLS_DOMAIN:-未配置}"
+  printf '  部署模式: %s\n' "${DEPLOY_MODE:-direct}"
+  if [[ "$DEPLOY_MODE" == "tunnel" ]]; then
+    printf '  隧道域名: %s\n' "${WS_HOST:-未配置}"
+    printf '  cloudflared: %s\n' "$(docker inspect singbox-warp-cloudflared --format '{{.State.Status}}' 2>/dev/null || echo 未运行)"
+  else
+    printf '  域名: %s\n' "${TLS_DOMAIN:-未配置}"
+  fi
+  if [[ "$ENABLE_WS" == "true" ]]; then printf '  VLESS-WS: true (端口 %s, 仅 Docker 内网)\n' "$WS_PORT"; fi
   printf '  HY2: %s (端口 %s)\n' "$ENABLE_HY2" "$HY2_PORT"
   printf '  VLESS: %s (端口 %s)\n' "$ENABLE_VLESS" "$VLESS_PORT"
   printf '  TUIC: %s (端口 %s/udp)\n' "$ENABLE_TUIC" "$TUIC_PORT"
@@ -1566,7 +1817,7 @@ cmd_show_nodes() {
   local ss_password ss_port ss_method ss_tag ss_link ss_userinfo
   local node_name
   local has_any="false"
-  node_name="$(normalize_name "${NODE_NAME:-${TLS_DOMAIN:-node}}")"
+  node_name="$(normalize_name "${NODE_NAME:-${TLS_DOMAIN:-${WS_HOST:-node}}}")"
   cfg="$(docker exec singbox-warp sh -c 'cat /etc/sing-box/config.json' 2>/dev/null || true)"
   if [[ -z "$cfg" ]]; then
     err "无法读取容器内的 /etc/sing-box/config.json"
@@ -1591,11 +1842,11 @@ cmd_show_nodes() {
     has_any="true"
   fi
 
-  vless_uuid="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not)) | .users[0].uuid // empty' | head -n1)"
-  vless_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not)) | .listen_port // empty' | head -n1)"
-  vless_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not)) | .tls.server_name // empty' | head -n1)"
-  vless_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not)) | .tag // empty' | head -n1)"
-  vless_flow="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not)) | .users[0].flow // empty' | head -n1)"
+  vless_uuid="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not) and ((.transport.type // "") != "ws")) | .users[0].uuid // empty' | head -n1)"
+  vless_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not) and ((.transport.type // "") != "ws")) | .listen_port // empty' | head -n1)"
+  vless_sni="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not) and ((.transport.type // "") != "ws")) | .tls.server_name // empty' | head -n1)"
+  vless_tag="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not) and ((.transport.type // "") != "ws")) | .tag // empty' | head -n1)"
+  vless_flow="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.tls.reality.enabled // false) | not) and ((.transport.type // "") != "ws")) | .users[0].flow // empty' | head -n1)"
   if [[ -n "$vless_uuid" && -n "$vless_port" && -n "$vless_sni" ]]; then
     vless_tag="${vless_tag:-vless-${node_name}}"
     vless_link="vless://${vless_uuid}@${vless_sni}:${vless_port}?encryption=none&security=tls&sni=${vless_sni}&type=tcp"
@@ -1654,6 +1905,23 @@ cmd_show_nodes() {
     has_any="true"
   fi
 
+  local ws_uuid ws_path ws_host ws_link
+  ws_uuid="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.transport.type // "") == "ws")) | .users[0].uuid // empty' | head -n1)"
+  ws_path="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="vless" and ((.transport.type // "") == "ws")) | .transport.path // empty' | head -n1)"
+  ws_host="${WS_HOST:-}"
+  if [[ -n "$ws_uuid" && -n "$ws_path" ]]; then
+    if [[ -n "$ws_host" ]]; then
+      ws_link="vless://${ws_uuid}@${WS_ADDRESS:-$ws_host}:443?encryption=none&security=tls&sni=${ws_host}&host=${ws_host}&type=ws&path=$(jq -rn --arg v "$ws_path" '$v|@uri')#ws-${node_name}"
+      printf '[node] %s\n' "$ws_link"
+      if command -v qrencode >/dev/null 2>&1; then
+        qrencode -t ANSIUTF8 "$ws_link"
+      fi
+      has_any="true"
+    else
+      diag_warn "VLESS-WS 已启用但未设置 WS_HOST，无法生成节点链接（路径 ${ws_path}）"
+    fi
+  fi
+
   ss_password="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="shadowsocks") | .password // empty' | head -n1)"
   ss_port="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="shadowsocks") | .listen_port // empty' | head -n1)"
   ss_method="$(printf '%s\n' "$cfg" | jq -r '.inbounds[]? | select(.type=="shadowsocks") | .method // empty' | head -n1)"
@@ -1680,7 +1948,8 @@ cmd_show_nodes() {
 apply_rollback_image() {
   local rollback_image="$1"
   [[ -f "$COMPOSE_FILE" ]] || { err "缺少 compose 文件: $COMPOSE_FILE"; return 1; }
-  sed -i -E "s#^([[:space:]]*image:[[:space:]]*).+#\1${rollback_image}#" "$COMPOSE_FILE"
+  # 只替换第一个 image（singbox-warp 服务）；隧道模式下 cloudflared 的镜像保持不变
+  sed -i -E "0,/^[[:space:]]*image:/s#^([[:space:]]*image:[[:space:]]*).+#\1${rollback_image}#" "$COMPOSE_FILE"
   if ! docker image inspect "$rollback_image" >/dev/null 2>&1; then
     docker pull "$rollback_image"
   fi
@@ -1723,6 +1992,7 @@ cmd_bootstrap() {
     err "首次安装未通过健康检查，请根据上方日志修正配置后重试"
     return 1
   }
+  check_tunnel_connected
   persist_active_app_dir
   log "初始化部署完成: $APP_DIR"
 }
@@ -1734,7 +2004,7 @@ cmd_update_image() {
     return 1
   }
   if [[ -s "$UPDATE_IMAGE_FILE" ]] && grep -Eq '^[[:space:]]*image:[[:space:]]*([^[:space:]]+@sha256:|sha256:)' "$COMPOSE_FILE"; then
-    sed -i -E "s#^([[:space:]]*image:[[:space:]]*).+#\1$(cat "$UPDATE_IMAGE_FILE")#" "$COMPOSE_FILE"
+    sed -i -E "0,/^[[:space:]]*image:/s#^([[:space:]]*image:[[:space:]]*).+#\1$(cat "$UPDATE_IMAGE_FILE")#" "$COMPOSE_FILE"
   fi
   record_current_image_for_rollback
   if ! (
@@ -1785,6 +2055,7 @@ cmd_edit_config() {
     wait_healthy || true
     return 1
   fi
+  check_tunnel_connected
   log "配置修改完成"
 }
 
@@ -1828,7 +2099,28 @@ cmd_diagnose() {
     diag_fail "未找到 singbox-warp 容器"
   fi
 
-  if [[ -n "$TLS_DOMAIN" ]]; then
+  local need_tls="false"
+  if [[ "$ENABLE_HY2" == "true" || "$ENABLE_VLESS" == "true" || "$ENABLE_ANYTLS" == "true" || "$ENABLE_TUIC" == "true" ]]; then
+    need_tls="true"
+  fi
+
+  if [[ "$DEPLOY_MODE" == "tunnel" ]]; then
+    if docker inspect singbox-warp-cloudflared --format '{{.State.Running}}' 2>/dev/null | grep -Fxq true; then
+      diag_ok "cloudflared 正在运行"
+      if docker logs --tail 200 singbox-warp-cloudflared 2>&1 | grep -q 'Registered tunnel connection'; then
+        diag_ok "隧道已连接到 Cloudflare"
+      else
+        diag_warn "最近日志里没有看到隧道连接成功；UDP 7844 不通时可把 CF_TUNNEL_PROTOCOL 改为 http2"
+      fi
+    else
+      diag_fail "cloudflared 容器未运行"
+    fi
+    if [[ -n "$WS_HOST" ]]; then diag_ok "隧道域名: $WS_HOST"; else diag_fail "WS_HOST 为空，无法生成节点链接"; fi
+  fi
+
+  if [[ "$need_tls" != "true" ]]; then
+    diag_ok "没有需要证书的入站，跳过域名和证书检查"
+  elif [[ -n "$TLS_DOMAIN" ]]; then
     if command -v getent >/dev/null 2>&1 && getent ahostsv4 "$TLS_DOMAIN" >/dev/null 2>&1; then
       diag_ok "域名可解析: $TLS_DOMAIN"
     else
@@ -1846,11 +2138,13 @@ cmd_diagnose() {
     else
       diag_fail "Cloudflare API Token 无效或网络不可达"
     fi
-  else
+  elif [[ "$need_tls" == "true" ]]; then
     diag_warn "未检查 Cloudflare Token（Token、curl 或 jq 缺失）"
   fi
 
-  if docker exec singbox-warp test -s "$TLS_CERT_PATH" >/dev/null 2>&1; then
+  if [[ "$need_tls" != "true" ]]; then
+    :
+  elif docker exec singbox-warp test -s "$TLS_CERT_PATH" >/dev/null 2>&1; then
     local cert_end
     cert_end="$(docker exec singbox-warp openssl x509 -in "$TLS_CERT_PATH" -noout -enddate 2>/dev/null || true)"
     if docker exec singbox-warp openssl x509 -in "$TLS_CERT_PATH" -checkend 2592000 -noout >/dev/null 2>&1; then

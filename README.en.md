@@ -98,6 +98,34 @@ These can be changed if needed, but the service can still start with defaults:
 - `.env` `USQUE_HTTP2`, default `true`; usque uses MASQUE over HTTP/2 (TCP 443)
 - `./data/wgcf-account.toml`, if you already have a WARP account file to reuse
 
+## Tunnel mode (hosts reachable only through a tunnel)
+
+For hosts with no inbound ports that can only be reached through Cloudflare Tunnel (cloud sandboxes such as InstaBox, NAT VPS, home lines).
+It runs two containers: this image (VLESS-WS only, no published ports) and `cloudflared`. No certificate and no extra sidecar sing-box are needed.
+
+1. Create a tunnel in Cloudflare Zero Trust -> Networks -> Tunnels and copy its token
+2. Add a Public Hostname: your hostname (for example `node.example.com`), Service `HTTP` + `singbox-warp:8080` (port matches `WS_PORT`)
+3. Deploy:
+   - Interactive script: choose `tunnel` as the deploy mode during first install
+   - Manual: put `CF_TUNNEL_TOKEN=...` and `WS_HOST=node.example.com` in `.env`, then `docker compose -f docker-compose.tunnel.yml up -d`
+4. Get the `vless://...type=ws...` link from `docker logs singbox-warp` or the script's node view
+
+Variables:
+
+- `ENABLE_WS`, default `false`: VLESS over plain WebSocket; TLS is terminated at the tunnel edge. Can be combined with the direct protocols
+- `WS_PORT`, default `8080`: listens on the Docker network only, never published
+- `WS_PATH`: generated randomly on first start when empty and saved in `./data/credentials.env`; other paths return 404
+- `WS_HOST`: the tunnel's public hostname, used for the client link
+- `WS_ADDRESS`: optional address clients dial (a preferred IP or domain); defaults to `WS_HOST`
+- `CF_TUNNEL_TOKEN`: required in tunnel mode
+- `CF_TUNNEL_PROTOCOL`, default `auto`: use `http2` when UDP 7844 is blocked
+
+Notes:
+
+- With only WS / Reality / Shadowsocks enabled no certificate is needed; `AUTO_TLS`, `TLS_DOMAIN` and the cert files are skipped
+- HY2, TUIC (UDP), direct TLS and Reality cannot pass through Cloudflare Tunnel and are disabled in tunnel mode
+- WARP, `WARP_SCOPE=split` and private-address blocking work as usual
+
 ## Local proxy entry (MIXED)
 
 sing-box inside the container runs a **`mixed`-type inbound**. Docker maps it to the host **`127.0.0.1:1080`** by default, supporting both:

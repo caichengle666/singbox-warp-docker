@@ -76,6 +76,13 @@ services:
       # Reality 伪装站点（需支持 TLS 1.3）；密钥和 short_id 首次启动自动生成并保存在 ./data
       - REALITY_SNI=${REALITY_SNI:-www.microsoft.com}
       - REALITY_SHORT_ID=${REALITY_SHORT_ID:-}
+      # 隧道模式（VLESS-WS，给 cloudflared 等反向隧道用，不需要证书、不映射公网端口）
+      # 只有隧道能进的机器请改用 docker-compose.tunnel.yml
+      - ENABLE_WS=${ENABLE_WS:-false}
+      - WS_PORT=${WS_PORT:-8080}
+      - WS_PATH=${WS_PATH:-}
+      - WS_HOST=${WS_HOST:-}
+      - WS_ADDRESS=${WS_ADDRESS:-}
       - MIXED_PORT=${MIXED_PORT:-1080}
       # 认证信息：不填时会自动生成并在日志打印节点链接
       - AUTH_UUID=${AUTH_UUID:-}

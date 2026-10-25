@@ -74,10 +74,12 @@ docker run -d --name "$NAME" --init \
   -p 127.0.0.1:36443:36443/udp \
   -p 127.0.0.1:20443:20443/tcp \
   -p 127.0.0.1:21080:21080/tcp \
+  -p 127.0.0.1:28080:28080/tcp \
   -e AUTO_TLS=false \
   -e TLS_DOMAIN="$DOMAIN" \
   -e ENABLE_HY2=true -e ENABLE_VLESS=true -e ENABLE_ANYTLS=true \
   -e ENABLE_SS=true -e ENABLE_TUIC=true -e ENABLE_REALITY=true \
+  -e ENABLE_WS=true -e WS_PORT=28080 -e WS_HOST="$DOMAIN" \
   -e REALITY_PORT=20443 -e MIXED_PORT=21080 \
   -e WARP_SCOPE=split -e WARP_SPLIT_GEOSITE=openai -e WARP_SPLIT_DOMAINS=example.org \
   "$IMAGE" >/dev/null
@@ -101,7 +103,8 @@ uuid="$(cred AUTH_UUID)"
 ss_password="$(cred SS_PASSWORD)"
 reality_pub="$(cred REALITY_PUBLIC_KEY)"
 reality_sid="$(cred REALITY_SHORT_ID)"
-[ -n "$uuid" ] && [ -n "$ss_password" ] && [ -n "$reality_pub" ] && [ -n "$reality_sid" ] ||
+ws_path="$(cred WS_PATH)"
+[ -n "$uuid" ] && [ -n "$ss_password" ] && [ -n "$reality_pub" ] && [ -n "$reality_sid" ] && [ -n "$ws_path" ] ||
   fail "credentials.env is missing generated values"
 
 config="$(docker exec "$NAME" cat /etc/sing-box/config.json)"
@@ -110,7 +113,7 @@ jq -e '.route.rules | any(.domain_suffix == ["example.org"])' <<<"$config" >/dev
 jq -e '.route.final == "direct"' <<<"$config" >/dev/null || fail "split mode: route.final is not direct"
 
 jq -n \
-  --arg uuid "$uuid" --arg ss "$ss_password" --arg pub "$reality_pub" --arg sid "$reality_sid" --arg sni "$DOMAIN" '
+  --arg uuid "$uuid" --arg ss "$ss_password" --arg pub "$reality_pub" --arg sid "$reality_sid" --arg sni "$DOMAIN" --arg wsPath "$ws_path" '
   def tls: {"enabled": true, "server_name": $sni, "insecure": true};
   {
     "log": {"level": "warn"},
@@ -120,7 +123,8 @@ jq -n \
       {"type": "mixed", "tag": "c-anytls", "listen": "127.0.0.1", "listen_port": 31003},
       {"type": "mixed", "tag": "c-ss", "listen": "127.0.0.1", "listen_port": 31004},
       {"type": "mixed", "tag": "c-reality", "listen": "127.0.0.1", "listen_port": 31005},
-      {"type": "mixed", "tag": "c-tuic", "listen": "127.0.0.1", "listen_port": 31006}
+      {"type": "mixed", "tag": "c-tuic", "listen": "127.0.0.1", "listen_port": 31006},
+      {"type": "mixed", "tag": "c-ws", "listen": "127.0.0.1", "listen_port": 31007}
     ],
     "outbounds": [
       {"type": "hysteria2", "tag": "hy2", "server": "127.0.0.1", "server_port": 32443, "password": $uuid, "tls": tls},
@@ -131,7 +135,10 @@ jq -n \
        "tls": {"enabled": true, "server_name": "www.microsoft.com", "utls": {"enabled": true, "fingerprint": "chrome"},
                "reality": {"enabled": true, "public_key": $pub, "short_id": $sid}}},
       {"type": "tuic", "tag": "tuic", "server": "127.0.0.1", "server_port": 36443, "uuid": $uuid, "password": $uuid,
-       "congestion_control": "bbr", "tls": (tls + {"alpn": ["h3"]})}
+       "congestion_control": "bbr", "tls": (tls + {"alpn": ["h3"]})},
+      {"type": "vless", "tag": "ws", "server": "127.0.0.1", "server_port": 28080, "uuid": $uuid,
+       "transport": {"type": "ws", "path": $wsPath, "headers": {"Host": $sni},
+                     "max_early_data": 2048, "early_data_header_name": "Sec-WebSocket-Protocol"}}
     ],
     "route": {"rules": [
       {"inbound": ["c-hy2"], "outbound": "hy2"},
@@ -139,7 +146,8 @@ jq -n \
       {"inbound": ["c-anytls"], "outbound": "anytls"},
       {"inbound": ["c-ss"], "outbound": "ss"},
       {"inbound": ["c-reality"], "outbound": "reality"},
-      {"inbound": ["c-tuic"], "outbound": "tuic"}
+      {"inbound": ["c-tuic"], "outbound": "tuic"},
+      {"inbound": ["c-ws"], "outbound": "ws"}
     ]}
   }' > "$work/client.json"
 
@@ -148,7 +156,7 @@ client_pid="$!"
 sleep 2
 
 failed=0
-for entry in 31001:hy2 31002:vless 31003:anytls 31004:ss 31005:reality 31006:tuic; do
+for entry in 31001:hy2 31002:vless 31003:anytls 31004:ss 31005:reality 31006:tuic 31007:ws; do
   port="${entry%%:*}" proto="${entry#*:}" ok=false
   for _ in 1 2 3; do
     if curl -fsS -o /dev/null --max-time 15 -x "socks5h://127.0.0.1:${port}" "$TEST_URL"; then
@@ -181,5 +189,38 @@ if docker logs "$NAME" 2>&1 | grep -q '\[warp\] using'; then
 else
   echo "::warning::no WARP egress came up in this environment (runs on direct); protocol checks still passed"
 fi
+
+# Tunnel mode: only the WebSocket inbound, no certificate mounted. AUTO_TLS is
+# set without a token to prove it is skipped when nothing needs a cert.
+docker rm -f "$NAME" >/dev/null 2>&1 || true
+docker run -d --name "$NAME" --init \
+  --security-opt no-new-privileges:true \
+  -v "$work/data:/var/lib/wgcf" \
+  -p 127.0.0.1:28080:28080/tcp \
+  -e AUTO_TLS=true \
+  -e ENABLE_HY2=false -e ENABLE_VLESS=false \
+  -e ENABLE_WS=true -e WS_PORT=28080 -e WS_HOST=tunnel.example.com \
+  -e WARP_MODE=direct \
+  "$IMAGE" >/dev/null
+for _ in $(seq 1 60); do
+  docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true || fail "tunnel mode: container exited during startup"
+  docker logs "$NAME" 2>&1 | grep -q 'sing-box started' && break
+  sleep 2
+done
+docker logs "$NAME" 2>&1 | grep -q 'sing-box started' || fail "tunnel mode: sing-box did not start"
+config="$(docker exec "$NAME" cat /etc/sing-box/config.json)"
+jq -e '[.inbounds[] | select(.type != "mixed")] | length == 1 and .[0].transport.type == "ws"' <<<"$config" >/dev/null ||
+  fail "tunnel mode: expected only the WebSocket inbound"
+docker logs "$NAME" 2>&1 | grep -q 'type=ws&path=' || fail "tunnel mode: client link not printed"
+ok=false
+for _ in 1 2 3; do
+  if curl -fsS -o /dev/null --max-time 15 -x socks5h://127.0.0.1:31007 "$TEST_URL"; then ok=true; break; fi
+  sleep 2
+done
+[ "$ok" = "true" ] || fail "tunnel mode: WebSocket inbound failed"
+# Anything other than the WebSocket path must not be served.
+code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:28080/ || true)"
+[ "$code" != "101" ] && [ "$code" != "200" ] || fail "tunnel mode: root path answered with $code"
+echo "ok   tunnel mode (ws only, no certificate)"
 
 echo "runtime test passed"

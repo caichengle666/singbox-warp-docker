@@ -21,6 +21,14 @@ REALITY_SNI_ENV="${REALITY_SNI:-www.microsoft.com}"
 REALITY_PRIVATE_KEY_ENV="${REALITY_PRIVATE_KEY:-}"
 REALITY_PUBLIC_KEY_ENV="${REALITY_PUBLIC_KEY:-}"
 REALITY_SHORT_ID_ENV="${REALITY_SHORT_ID:-}"
+# Tunnel mode: plain VLESS over WebSocket for a reverse tunnel such as
+# cloudflared, which terminates TLS at its edge. WS_HOST is the public
+# hostname clients use; WS_ADDRESS optionally overrides the address they dial.
+ENABLE_WS_ENV="${ENABLE_WS:-false}"
+WS_PORT_ENV="${WS_PORT:-8080}"
+WS_PATH_ENV="${WS_PATH:-}"
+WS_HOST_ENV="${WS_HOST:-}"
+WS_ADDRESS_ENV="${WS_ADDRESS:-}"
 WARP_SCOPE_ENV="${WARP_SCOPE:-all}"
 WARP_SPLIT_GEOSITE_ENV="${WARP_SPLIT_GEOSITE-openai,anthropic,google-gemini,netflix,disney}"
 WARP_SPLIT_DOMAINS_ENV="${WARP_SPLIT_DOMAINS:-}"
@@ -45,6 +53,10 @@ ANYTLS_PASSWORD_ENV="${ANYTLS_PASSWORD:-}"
 SS_PASSWORD_ENV="${SS_PASSWORD:-}"
 TUIC_PASSWORD_ENV="${TUIC_PASSWORD:-}"
 NODE_NAME_ENV="${NODE_NAME:-}"
+# Set by validate_required_config: whether any enabled inbound needs the
+# TLS certificate (HY2, VLESS-TLS, AnyTLS, TUIC). Reality, Shadowsocks and
+# the tunnel WebSocket inbound do not.
+NEED_TLS="false"
 SINGBOX_PID=""
 MANUAL_CERT_SUM=""
 MANUAL_CERT_CHECK_INTERVAL=60
@@ -135,6 +147,7 @@ renew_tls_cert_once() {
 }
 
 ensure_tls_cert() {
+  [ "$NEED_TLS" = "true" ] || return 0
   mkdir -p "$(dirname "$TLS_CERT_PATH_ENV")" "$(dirname "$TLS_KEY_PATH_ENV")" /var/lib/acme
   export HOME=/var/lib/acme
   export LE_CONFIG_HOME=/var/lib/acme/.acme.sh
@@ -221,6 +234,7 @@ cert_checksum() {
 # Manual TLS: reload sing-box when the mounted cert/key files are replaced.
 reload_manual_cert_if_changed() {
   local current
+  [ "$NEED_TLS" = "true" ] || return 0
   [ "$AUTO_TLS_ENV" = "true" ] && return 0
   [ -s "$TLS_CERT_PATH_ENV" ] && [ -s "$TLS_KEY_PATH_ENV" ] || return 0
   current="$(cert_checksum)"
@@ -234,6 +248,7 @@ reload_manual_cert_if_changed() {
 }
 
 renew_tls_cert_if_needed() {
+  [ "$NEED_TLS" = "true" ] || return 0
   if [ "$AUTO_TLS_ENV" != "true" ]; then
     return 0
   fi
@@ -589,6 +604,26 @@ validate_required_config() {
     echo "[config] ENABLE_REALITY must be true or false, got: $ENABLE_REALITY_ENV"
     exit 1
   fi
+  if [ "$ENABLE_WS_ENV" != "true" ] && [ "$ENABLE_WS_ENV" != "false" ]; then
+    echo "[config] ENABLE_WS must be true or false, got: $ENABLE_WS_ENV"
+    exit 1
+  fi
+  if [ "$ENABLE_WS_ENV" = "true" ]; then
+    if [ -n "$WS_PATH_ENV" ]; then
+      if ! [[ "$WS_PATH_ENV" =~ ^/[A-Za-z0-9._~/-]*$ ]] || [ "${#WS_PATH_ENV}" -gt 128 ]; then
+        echo "[config] WS_PATH must start with / and use only letters, digits and . _ ~ / - (max 128 chars), got: $WS_PATH_ENV"
+        exit 1
+      fi
+    fi
+    if [ -n "$WS_HOST_ENV" ] && ! [[ "$WS_HOST_ENV" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+      echo "[config] WS_HOST must be a hostname (the tunnel's public hostname), got: $WS_HOST_ENV"
+      exit 1
+    fi
+    if [ -n "$WS_ADDRESS_ENV" ] && ! [[ "$WS_ADDRESS_ENV" =~ ^[A-Za-z0-9.:-]+$ ]]; then
+      echo "[config] WS_ADDRESS must be a hostname or IP address, got: $WS_ADDRESS_ENV"
+      exit 1
+    fi
+  fi
   case "$WARP_SCOPE_ENV" in
     all|split) ;;
     *) echo "[config] WARP_SCOPE must be all or split, got: $WARP_SCOPE_ENV"; exit 1 ;;
@@ -637,7 +672,8 @@ validate_required_config() {
   validate_positive_integer "WARP_PROBE_INTERVAL" "$WARP_PROBE_INTERVAL_ENV"
   if [ "$ENABLE_HY2_ENV" != "true" ] && [ "$ENABLE_VLESS_ENV" != "true" ] &&
      [ "$ENABLE_ANYTLS_ENV" != "true" ] && [ "$ENABLE_SS_ENV" != "true" ] &&
-     [ "$ENABLE_TUIC_ENV" != "true" ] && [ "$ENABLE_REALITY_ENV" != "true" ]; then
+     [ "$ENABLE_TUIC_ENV" != "true" ] && [ "$ENABLE_REALITY_ENV" != "true" ] &&
+     [ "$ENABLE_WS_ENV" != "true" ]; then
     echo "[config] at least one inbound must be enabled"
     exit 1
   fi
@@ -650,6 +686,7 @@ validate_required_config() {
   validate_port "SS_PORT" "$SS_PORT_ENV"
   validate_port "TUIC_PORT" "$TUIC_PORT_ENV"
   validate_port "REALITY_PORT" "$REALITY_PORT_ENV"
+  validate_port "WS_PORT" "$WS_PORT_ENV"
   validate_port "MIXED_PORT" "$MIXED_PORT_ENV"
 
   # Enabled inbound ports (plus MIXED) must be unique and must not take the
@@ -661,6 +698,7 @@ validate_required_config() {
   [ "$ENABLE_SS_ENV" = "true" ] && used_ports+=("SS:$SS_PORT_ENV")
   [ "$ENABLE_TUIC_ENV" = "true" ] && used_ports+=("TUIC:$TUIC_PORT_ENV")
   [ "$ENABLE_REALITY_ENV" = "true" ] && used_ports+=("REALITY:$REALITY_PORT_ENV")
+  [ "$ENABLE_WS_ENV" = "true" ] && used_ports+=("WS:$WS_PORT_ENV")
   local item port seen=" "
   for item in "${used_ports[@]}"; do
     port="${item#*:}"
@@ -674,13 +712,25 @@ validate_required_config() {
     seen="${seen}${port} "
   done
 
-  if [ "$ENABLE_VLESS_ENV" = "true" ] || [ "$ENABLE_REALITY_ENV" = "true" ] || [ "$ENABLE_TUIC_ENV" = "true" ]; then
+  if [ "$ENABLE_VLESS_ENV" = "true" ] || [ "$ENABLE_REALITY_ENV" = "true" ] ||
+     [ "$ENABLE_TUIC_ENV" = "true" ] || [ "$ENABLE_WS_ENV" = "true" ]; then
     local effective_vless_uuid="${VLESS_UUID_ENV:-$AUTH_UUID_ENV}"
     if [ -n "$effective_vless_uuid" ] &&
        ! [[ "$effective_vless_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
       echo "[config] VLESS_UUID/AUTH_UUID is not a valid UUID"
       exit 1
     fi
+  fi
+
+  if [ "$ENABLE_HY2_ENV" = "true" ] || [ "$ENABLE_VLESS_ENV" = "true" ] ||
+     [ "$ENABLE_ANYTLS_ENV" = "true" ] || [ "$ENABLE_TUIC_ENV" = "true" ]; then
+    NEED_TLS="true"
+  fi
+  if [ "$NEED_TLS" != "true" ]; then
+    if [ "$AUTO_TLS_ENV" = "true" ]; then
+      echo "[tls] no enabled inbound uses the TLS certificate; skipping AUTO_TLS"
+    fi
+    return 0
   fi
 
   if [ "$AUTO_TLS_ENV" = "true" ] && [ -z "$TLS_DOMAIN_ENV" ]; then
@@ -837,9 +887,24 @@ if [ "$ENABLE_REALITY_ENV" = "true" ]; then
   fi
 fi
 
+WS_PATH_EFFECTIVE="/ws"
+if [ "$ENABLE_WS_ENV" = "true" ]; then
+  WS_PATH_EFFECTIVE="$WS_PATH_ENV"
+  if [ -z "$WS_PATH_EFFECTIVE" ]; then
+    # A random path keeps the inbound from answering scanners that probe
+    # common WebSocket paths through the public tunnel hostname.
+    WS_PATH_EFFECTIVE="$(load_persisted_credential WS_PATH)"
+    if ! [[ "$WS_PATH_EFFECTIVE" =~ ^/[A-Za-z0-9._~/-]+$ ]]; then
+      WS_PATH_EFFECTIVE="/$(openssl rand -hex 8)"
+      save_persisted_credential WS_PATH "$WS_PATH_EFFECTIVE"
+      echo "[auth] generated WS_PATH and saved it to $CREDENTIALS_FILE"
+    fi
+  fi
+fi
+
 NODE_NAME_EFFECTIVE="$NODE_NAME_ENV"
 if [ -z "$NODE_NAME_EFFECTIVE" ]; then
-  NODE_NAME_EFFECTIVE="$TLS_DOMAIN_ENV"
+  NODE_NAME_EFFECTIVE="${TLS_DOMAIN_ENV:-${WS_HOST_ENV:-node}}"
 fi
 NODE_NAME_EFFECTIVE="$(normalize_name "$NODE_NAME_EFFECTIVE")"
 HY2_TAG_ENV="hy2-${NODE_NAME_EFFECTIVE}"
@@ -852,6 +917,7 @@ sed -i \
   -e "s|__SS_PORT__|$SS_PORT_ENV|g" \
   -e "s|__TUIC_PORT__|$TUIC_PORT_ENV|g" \
   -e "s|__REALITY_PORT__|$REALITY_PORT_ENV|g" \
+  -e "s|__WS_PORT__|$WS_PORT_ENV|g" \
   -e "s|__HY2_TAG__|$HY2_TAG_ENV|g" \
   -e "s|__VLESS_TAG__|$VLESS_TAG_ENV|g" \
   -e "s|__WARP_PEER_PORT__|$WARP_PEER_PORT|g" \
@@ -885,9 +951,13 @@ jq \
   --arg enableSs "$ENABLE_SS_ENV" \
   --arg hy2Tag "$HY2_TAG_ENV" \
   --arg vlessTag "$VLESS_TAG_ENV" \
+  --arg enableWs "$ENABLE_WS_ENV" \
+  --arg wsPath "$WS_PATH_EFFECTIVE" \
+  --arg wsTag "ws-${NODE_NAME_EFFECTIVE}" \
   '
   def isReality: .type=="vless" and (.tls.reality.enabled // false);
-  def isVlessTls: .type=="vless" and (isReality | not);
+  def isWs: .type=="vless" and ((.transport.type // "") == "ws");
+  def isVlessTls: .type=="vless" and (isReality | not) and (isWs | not);
   def usesCert: .type=="hysteria2" or isVlessTls or .type=="anytls" or .type=="tuic";
   (.inbounds[] | select(.type=="hysteria2") | .users[0].password) = $hy2Password |
   (.inbounds[] | select(.type=="vless") | .users[0].uuid) = $vlessUuid |
@@ -904,6 +974,8 @@ jq \
   (.inbounds[] | select(isReality) | .tls.reality.handshake.server) = $realitySni |
   (.inbounds[] | select(isReality) | .tls.reality.private_key) = $realityPrivateKey |
   (.inbounds[] | select(isReality) | .tls.reality.short_id) = [$realityShortId] |
+  (.inbounds[] | select(isWs) | .transport.path) = $wsPath |
+  (.inbounds[] | select(isWs) | .tag) = $wsTag |
   .inbounds |= map(select(
     (.type=="hysteria2" and $enableHy2=="true") or
     (isVlessTls and $enableVless=="true") or
@@ -911,6 +983,7 @@ jq \
     (.type=="anytls" and $enableAnytls=="true") or
     (.type=="shadowsocks" and $enableSs=="true") or
     (.type=="tuic" and $enableTuic=="true") or
+    (isWs and $enableWs=="true") or
     (.type=="mixed")
   )) |
   (.endpoints[] | select(.tag=="warp") | .address) = [$warpAddressV4, $warpAddressV6] |
@@ -981,7 +1054,7 @@ uri_encode() {
 }
 
 print_node_links() {
-  local cfg="$SB_CONFIG" host="$TLS_DOMAIN_ENV" tag port link userinfo method
+  local cfg="$SB_CONFIG" host="${TLS_DOMAIN_ENV:-SERVER_IP}" tag port link userinfo method
   if [ "$ENABLE_HY2_ENV" = "true" ]; then
     tag="$(jq -r '.inbounds[] | select(.type=="hysteria2") | .tag' "$cfg" | head -n1)"
     link="hy2://$(uri_encode "$HY2_PASSWORD_ENV")@${host}:${HY2_PORT_ENV}?sni=${host}"
@@ -991,7 +1064,7 @@ print_node_links() {
     echo "[node] ${link}&insecure=0#$(uri_encode "$tag")"
   fi
   if [ "$ENABLE_VLESS_ENV" = "true" ]; then
-    tag="$(jq -r '.inbounds[] | select(.type=="vless" and ((.tls.reality.enabled // false) | not)) | .tag' "$cfg" | head -n1)"
+    tag="$(jq -r '.inbounds[] | select(.type=="vless" and ((.tls.reality.enabled // false) | not) and ((.transport.type // "") != "ws")) | .tag' "$cfg" | head -n1)"
     echo "[node] vless://${VLESS_UUID_ENV}@${host}:${VLESS_PORT_ENV}?encryption=none&security=tls&sni=${host}&type=tcp&flow=xtls-rprx-vision#$(uri_encode "$tag")"
   fi
   if [ "$ENABLE_ANYTLS_ENV" = "true" ]; then
@@ -1003,6 +1076,15 @@ print_node_links() {
   fi
   if [ "$ENABLE_TUIC_ENV" = "true" ]; then
     echo "[node] tuic://${VLESS_UUID_ENV}:$(uri_encode "$TUIC_PASSWORD_ENV")@${host}:${TUIC_PORT_ENV}?sni=${host}&alpn=h3&congestion_control=bbr#$(uri_encode "tuic-${NODE_NAME_EFFECTIVE}")"
+  fi
+  if [ "$ENABLE_WS_ENV" = "true" ]; then
+    if [ -n "$WS_HOST_ENV" ]; then
+      # TLS is terminated by the tunnel's edge, so the client side is
+      # vless + ws over TLS on 443 with the public hostname as SNI and Host.
+      echo "[node] vless://${VLESS_UUID_ENV}@${WS_ADDRESS_ENV:-$WS_HOST_ENV}:443?encryption=none&security=tls&sni=${WS_HOST_ENV}&host=${WS_HOST_ENV}&type=ws&path=$(uri_encode "$WS_PATH_EFFECTIVE")#$(uri_encode "ws-${NODE_NAME_EFFECTIVE}")"
+    else
+      echo "[node] tunnel inbound listens on :${WS_PORT_ENV} path ${WS_PATH_EFFECTIVE}; set WS_HOST to the tunnel's public hostname to print a client link"
+    fi
   fi
   if [ "$ENABLE_SS_ENV" = "true" ]; then
     tag="$(jq -r '.inbounds[] | select(.type=="shadowsocks") | .tag' "$cfg" | head -n1)"

@@ -120,6 +120,34 @@ swd
 - `.env` `USQUE_HTTP2`，默认 `true`；usque 走 MASQUE over HTTP/2（TCP 443）
 - `./data/wgcf-account.toml`，如果你已有 WARP 账户文件，可直接复用
 
+## 隧道模式（只有隧道能进的机器）
+
+适合没有公网入站端口、只能通过 Cloudflare Tunnel 进来的机器（例如 InstaBox 这类云沙箱、NAT 机、家宽）。
+只需要两个容器：本项目（只开 VLESS-WS，不映射任何公网端口）+ `cloudflared`，不需要证书，也不需要额外的旁挂 sing-box。
+
+1. Cloudflare Zero Trust -> Networks -> Tunnels 新建隧道，复制 token
+2. 在隧道的 Public Hostname 添加：Hostname 填你的域名（例如 `node.example.com`），Service 填 `HTTP` + `singbox-warp:8080`（端口与 `WS_PORT` 一致）
+3. 部署：
+   - 交互脚本：`首次安装` 时部署模式选 `tunnel`，按提示填 token 和域名
+   - 手动：在 `.env` 写 `CF_TUNNEL_TOKEN=...` 和 `WS_HOST=node.example.com`，然后 `docker compose -f docker-compose.tunnel.yml up -d`
+4. `docker logs singbox-warp` 或脚本的 `查看节点` 获取 `vless://...type=ws...` 链接
+
+相关变量：
+
+- `.env` `ENABLE_WS`，默认 `false`；VLESS-WS 入站，明文 WS，TLS 由隧道边缘终止。也可以和直连协议同时开启（自备反代或隧道时）
+- `.env` `WS_PORT`，默认 `8080`；只在 Docker 内网监听，不映射到宿主机
+- `.env` `WS_PATH`，留空时首次启动随机生成并保存在 `./data/credentials.env`；非该路径的请求一律 404
+- `.env` `WS_HOST`，隧道的公网域名，只用于生成节点链接
+- `.env` `WS_ADDRESS`，可选；客户端实际连接的地址（优选 IP/域名），留空用 `WS_HOST`
+- `.env` `CF_TUNNEL_TOKEN`，隧道模式必填
+- `.env` `CF_TUNNEL_PROTOCOL`，默认 `auto`；机器 UDP 7844 不通时改成 `http2`
+
+说明：
+
+- 只开 WS / Reality / Shadowsocks 时不需要证书，`AUTO_TLS`、`TLS_DOMAIN` 和证书文件都会被跳过
+- HY2、TUIC（UDP）以及直连 TLS、Reality 无法穿过 Cloudflare Tunnel，隧道模式下不启用
+- WARP、`WARP_SCOPE=split` 分流、私网地址拦截在隧道模式下照常生效
+
 ## 本地代理入口（MIXED）
 
 容器内 sing-box 启动一个 **`mixed` 类型入站**，Docker 默认只映射到宿主机 **`127.0.0.1:1080`**，同时支持：
