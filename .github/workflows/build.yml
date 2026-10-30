@@ -35,9 +35,12 @@ jobs:
           test -n "$expected_version"
           version="$(bash deploy.sh --version)"
           grep -Fq "singbox-warp manager v${expected_version}" <<<"$version"
-          output="$(printf '15\n' | FORCE_STDIN=1 bash deploy.sh)"
+          output="$(printf '16\n' | FORCE_STDIN=1 bash deploy.sh)"
           grep -Fq '正在通过 sudo 请求权限' <<<"$output"
           grep -Fq '[deploy] 退出' <<<"$output"
+          guide="$(bash deploy.sh guide 2>&1)"
+          grep -Fq 'dash.cloudflare.com/profile/api-tokens' <<<"$guide"
+          grep -Fq 'http://singbox-warp:8080' <<<"$guide"
           if [ "${{ github.ref_type }}" = "tag" ]; then
             # Release tags follow the manager version so the two never drift.
             test "${{ github.ref_name }}" = "v${expected_version}" || {

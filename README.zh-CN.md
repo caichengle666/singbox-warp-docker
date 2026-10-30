@@ -46,7 +46,13 @@ curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/m
 swd
 ```
 
-首次安装使用自动 TLS。运行前请在 [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens) 创建具有对应 Zone `DNS:Edit` 权限的 Token。脚本会隐藏 Token 输入，并将其保存到部署目录的 `.env` 中。
+直连模式首次安装使用自动 TLS，需要一个托管在 Cloudflare 的域名和一个 [Cloudflare API Token](https://dash.cloudflare.com/profile/api-tokens)（模板 `Edit zone DNS`，再加 `Zone / Zone / Read`）。隧道模式只需要域名和 Tunnel token。
+
+不知道怎么申请也没关系：脚本会在每一步打印申请链接和步骤，输入框里输入 `?` 可再次查看，填完后会在线检查 Token 是否可用；隧道模式部署完还会从公网实际连一次，告诉你哪里没配好。只想看指南：
+
+```bash
+bash deploy.sh guide
+```
 
 ## 必填项
 
@@ -125,8 +131,8 @@ swd
 适合没有公网入站端口、只能通过 Cloudflare Tunnel 进来的机器（例如 InstaBox 这类云沙箱、NAT 机、家宽）。
 只需要两个容器：本项目（只开 VLESS-WS，不映射任何公网端口）+ `cloudflared`，不需要证书，也不需要额外的旁挂 sing-box。
 
-1. Cloudflare Zero Trust -> Networks -> Tunnels 新建隧道，复制 token
-2. 在隧道的 Public Hostname 添加：Hostname 填你的域名（例如 `node.example.com`），Service 填 `HTTP` + `singbox-warp:8080`（端口与 `WS_PORT` 一致）
+1. 打开 [Cloudflare Tunnels](https://dash.cloudflare.com/?to=/:account/tunnels)（Networking -> Tunnels），Create a tunnel，类型选 Cloudflared，复制安装命令里 `--token` 后面 `eyJ` 开头的那串（整条命令粘给脚本也行）
+2. 在隧道的 Routes 添加 Published application（旧版叫 Public Hostname）：域名填一级子域名（例如 `node.example.com`），Service URL 填 `http://singbox-warp:8080`（端口与 `WS_PORT` 一致）
 3. 部署：
    - 交互脚本：`首次安装` 时部署模式选 `tunnel`，按提示填 token 和域名
    - 手动：在 `.env` 写 `CF_TUNNEL_TOKEN=...` 和 `WS_HOST=node.example.com`，然后 `docker compose -f docker-compose.tunnel.yml up -d`

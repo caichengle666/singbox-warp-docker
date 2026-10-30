@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.4.0"
+SCRIPT_VERSION="2.5.0"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -120,6 +120,7 @@ usage() {
   cat <<'EOF'
 Usage:
   deploy.sh
+  deploy.sh guide       打印申请指南（Cloudflare 域名、API Token、Tunnel token、WARP+）
   deploy.sh --version
 
 Environment:
@@ -346,8 +347,9 @@ ask_menu_choice() {
     printf " 12) 自动更新设置\n" >&2
     printf " 13) 回滚镜像\n" >&2
     printf " 14) 卸载服务\n" >&2
-    printf " 15) 退出\n" >&2
-    printf "请输入 [1-15]: " >&2
+    printf " 15) 申请指南（域名 / Token / 隧道 / WARP+）\n" >&2
+    printf " 16) 退出\n" >&2
+    printf "请输入 [1-16]: " >&2
     if [[ "${FORCE_STDIN:-0}" == "1" ]]; then
       if ! read -r value; then
         err "未能从 stdin 读取交互输入"
@@ -365,11 +367,11 @@ ask_menu_choice() {
       fi
     fi
     if [[ -z "$value" ]]; then
-      err "未输入内容，请输入 1-15"
+      err "未输入内容，请输入 1-16"
       continue
     fi
     case "$value" in
-      1|2|3|4|5|6|7|8|9|10|11|12|13|14|15)
+      1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16)
         printf '%s' "$value"
         return 0
         ;;
@@ -766,6 +768,275 @@ ensure_host_tools() {
   run_root apt-get install -y "${missing[@]}"
 }
 
+# ---------------------------------------------------------------------------
+# 申请指南：Cloudflare 账号/域名、API Token、Tunnel token、WARP+ 按键。
+# 新手常卡在「去哪申请、选什么权限、复制哪一段」，这里把链接和步骤直接打印出来。
+# 所有输出走 stderr，不影响 ask_* 的返回值。
+# ---------------------------------------------------------------------------
+GUIDE_CF_SIGNUP_URL="https://dash.cloudflare.com/sign-up"
+GUIDE_CF_ADD_SITE_URL="https://developers.cloudflare.com/fundamentals/manage-domains/add-site/"
+GUIDE_CF_DOMAINS_URL="https://domains.cloudflare.com/"
+GUIDE_CF_API_TOKEN_URL="https://dash.cloudflare.com/profile/api-tokens"
+GUIDE_CF_TUNNELS_URL="https://dash.cloudflare.com/?to=/:account/tunnels"
+GUIDE_CF_TUNNEL_DOC_URL="https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/"
+GUIDE_WARP_APP_URL="https://one.one.one.one/"
+GUIDE_REPO_URL="https://github.com/caichengle666/singbox-warp-docker"
+
+guide_title() {
+  printf '\n==================== %s ====================\n' "$1" >&2
+}
+
+guide_line() {
+  printf '%s\n' "$@" >&2
+}
+
+guide_domain() {
+  guide_title "准备：托管在 Cloudflare 的域名"
+  guide_line \
+    "  1. 注册 Cloudflare 免费账号: $GUIDE_CF_SIGNUP_URL" \
+    "  2. 登录后点 Add a domain（添加域名），输入你的域名，选 Free 免费计划" \
+    "  3. 到域名注册商后台，把 NS（域名服务器）改成 Cloudflare 给的两个" \
+    "  4. 等 Cloudflare 里域名状态变成 Active（通常几分钟，最长 24 小时）" \
+    "  图文说明: $GUIDE_CF_ADD_SITE_URL" \
+    "  还没有域名: 可以在 $GUIDE_CF_DOMAINS_URL 或任意注册商购买"
+}
+
+guide_api_token() {
+  guide_title "申请 Cloudflare API Token（用于自动签证书、自动建 DNS 记录）"
+  guide_line \
+    "  1. 打开: $GUIDE_CF_API_TOKEN_URL" \
+    "  2. 点 Create Token -> 选模板 Edit zone DNS（编辑区域 DNS）-> Use template" \
+    "  3. Permissions 保留 Zone / DNS / Edit，再点 Add more 加一行 Zone / Zone / Read" \
+    "  4. Zone Resources 选 Include / Specific zone / 你的域名" \
+    "  5. 点 Continue to summary -> Create Token，复制显示的 Token（只显示一次）" \
+    "  注意: 要的是 API Token，不是 Global API Key；粘贴时不要带空格"
+}
+
+guide_tunnel() {
+  local port="${1:-$WS_PORT}"
+  guide_title "申请 Cloudflare Tunnel token"
+  guide_line \
+    "  前提: 域名已托管在 Cloudflare（还没有的话先看 deploy.sh guide 里的域名部分）" \
+    "  1. 打开: $GUIDE_CF_TUNNELS_URL" \
+    "     （登录后进入 Networking -> Tunnels；旧版界面在 Zero Trust -> Networks -> Tunnels）" \
+    "  2. 点 Create a tunnel，类型选 Cloudflared，起个名字后保存" \
+    "  3. 安装页面选 Docker，复制命令里 --token 后面那一长串（eyJ 开头）" \
+    "     整条命令直接粘贴进来也可以，脚本会自动提取；不需要在本机运行那条命令" \
+    "  4. 继续到 Routes（旧版叫 Public Hostname）-> Add route -> Published application:" \
+    "       Subdomain: 例如 node      Domain: 选你的域名" \
+    "       Service URL: http://singbox-warp:${port}" \
+    "     （旧版界面: Service Type 选 HTTP，URL 填 singbox-warp:${port}）" \
+    "  5. 保存。建议用一级子域名（node.example.com），多级子域名免费证书不覆盖，会握手失败" \
+    "  官方图文: $GUIDE_CF_TUNNEL_DOC_URL"
+}
+
+guide_warp_license() {
+  guide_title "WARP+ 按键（可选）"
+  guide_line \
+    "  不填就用免费 WARP，绝大多数场景够用。有 WARP+ 订阅才需要填：" \
+    "  1. 手机安装 1.1.1.1 App: $GUIDE_WARP_APP_URL" \
+    "  2. 菜单 -> 账户（Account）-> 按键（Key），复制那串 xxxxxxxx-xxxxxxxx-xxxxxxxx" \
+    "  注意: 一个按键最多绑定 5 台设备，本机会占用其中一个名额"
+}
+
+guide_checklist() {
+  local mode="${1:-direct}"
+  guide_title "开始前请准备"
+  if [[ "$mode" == "tunnel" ]]; then
+    guide_line \
+      "  [ ] 一个托管在 Cloudflare 的域名" \
+      "  [ ] 一个 Cloudflare Tunnel token，并给隧道加好 Published application 路由" \
+      "  本机不需要开放任何入站端口，也不需要证书" \
+      "  不知道怎么申请: 下面会打印步骤；输入框里输入 ? 可再次查看"
+  else
+    guide_line \
+      "  [ ] 一个托管在 Cloudflare 的域名（用于自动签证书）" \
+      "  [ ] 一个 Cloudflare API Token（Zone / DNS / Edit + Zone / Zone / Read）" \
+      "  [ ] 云服务器安全组/防火墙放行你要启用的协议端口（HY2、TUIC 是 UDP）" \
+      "  不知道怎么申请: 下面会打印步骤；输入框里输入 ? 可再次查看"
+  fi
+}
+
+cmd_guide() {
+  guide_line "singbox-warp 申请指南 v$SCRIPT_VERSION    项目主页: $GUIDE_REPO_URL"
+  guide_domain
+  guide_api_token
+  guide_tunnel "$WS_PORT"
+  guide_warp_license
+  guide_line ""
+}
+
+# 和 ask_input 一样，但输入 ? 时打印对应指南并重新提问。
+ask_input_guided() {
+  local prompt="$1" default="$2" guide_fn="$3" value
+  while true; do
+    value="$(ask_input "$prompt（输入 ? 查看申请步骤）" "$default")"
+    if [[ "$value" == "?" || "$value" == "？" ]]; then
+      "$guide_fn"
+      continue
+    fi
+    printf '%s' "$value"
+    return 0
+  done
+}
+
+trim_value() {
+  printf '%s' "$1" | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
+}
+
+# 用户常把整条安装命令（cloudflared service install eyJ... / --token eyJ...）粘进来，
+# 这里取出真正的 token；没有 eyJ 开头的片段时原样返回（去掉首尾空白和引号）。
+extract_tunnel_token() {
+  local raw word token=""
+  local -a words=()
+  raw="$(trim_value "$1")"
+  read -r -a words <<<"$raw" || true
+  for word in "${words[@]}"; do
+    word="${word#--token=}"
+    word="${word//\"/}"
+    word="${word//\'/}"
+    [[ "$word" == eyJ* ]] && token="$word"
+  done
+  if [[ -z "$token" ]]; then
+    token="${raw//\"/}"
+    token="${token//\'/}"
+  fi
+  printf '%s' "$token"
+}
+
+# 远程管理隧道的 token 是 base64 的 JSON：{"a":账号ID,"t":隧道ID,"s":密钥}。
+# 能解出来就打印隧道 ID，解不出来返回 1。
+tunnel_token_id() {
+  local token="$1" padded json id
+  [[ "$token" =~ ^[A-Za-z0-9+/_=-]{40,}$ ]] || return 1
+  padded="$(printf '%s' "$token" | tr '_-' '/+')"
+  case $(( ${#padded} % 4 )) in
+    2) padded="${padded}==" ;;
+    3) padded="${padded}=" ;;
+    1) return 1 ;;
+  esac
+  json="$(printf '%s' "$padded" | base64 -d 2>/dev/null)" || return 1
+  [[ "$json" == *'"a"'* && "$json" == *'"s"'* ]] || return 1
+  id="$(printf '%s' "$json" | sed -nE 's/.*"t"[[:space:]]*:[[:space:]]*"([0-9a-fA-F-]{36})".*/\1/p')"
+  [[ -n "$id" ]] || return 1
+  printf '%s' "$id"
+}
+
+CF_CHECK_ERROR=""
+CF_CHECK_ZONE=""
+CF_CHECK_ZONE_ID=""
+
+# 在线检查 Cloudflare API Token 能否看到并编辑 $2 所在的 zone。
+# 返回 0 = 可用（zone 在 CF_CHECK_ZONE / CF_CHECK_ZONE_ID）；1 = 明确不可用（原因在 CF_CHECK_ERROR）；
+# 2 = 无法检查（网络/工具缺失）。结果放在全局变量里，调用方不要用 $(...) 包它。
+cf_token_check() {
+  local token="$1" name="$2" candidate resp zid status
+  CF_CHECK_ERROR=""
+  CF_CHECK_ZONE=""
+  CF_CHECK_ZONE_ID=""
+  command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 2
+  [[ -n "$token" && -n "$name" ]] || return 2
+  candidate="${name%.}"
+  while [[ "$candidate" == *.* ]]; do
+    resp="$(curl -sS --connect-timeout 5 --max-time 15 --get \
+      -H "Authorization: Bearer $token" \
+      --data-urlencode "name=$candidate" \
+      "https://api.cloudflare.com/client/v4/zones" 2>/dev/null)" || return 2
+    printf '%s' "$resp" | jq -e 'type == "object"' >/dev/null 2>&1 || return 2
+    if ! printf '%s' "$resp" | jq -e '.success == true' >/dev/null 2>&1; then
+      CF_CHECK_ERROR="Token 无效或权限不足（$(printf '%s' "$resp" | jq -r '[.errors[]?.message] | join("; ")' 2>/dev/null)）"
+      return 1
+    fi
+    zid="$(printf '%s' "$resp" | jq -r '.result[0].id // empty')"
+    if [[ -n "$zid" ]]; then
+      CF_CHECK_ZONE="$candidate"
+      status="$(printf '%s' "$resp" | jq -r '.result[0].status // empty')"
+      if [[ "$status" != "active" ]]; then
+        CF_CHECK_ERROR="域名 $candidate 在 Cloudflare 的状态是 ${status:-unknown}，还没生效；请先到注册商把 NS 改成 Cloudflare 的，等状态变成 Active"
+        return 1
+      fi
+      resp="$(curl -sS --connect-timeout 5 --max-time 15 --get \
+        -H "Authorization: Bearer $token" --data-urlencode "per_page=1" \
+        "https://api.cloudflare.com/client/v4/zones/$zid/dns_records" 2>/dev/null)" || return 2
+      if ! printf '%s' "$resp" | jq -e '.success == true' >/dev/null 2>&1; then
+        CF_CHECK_ERROR="Token 能看到 $candidate，但没有 DNS 权限；请给 Token 加上 Zone / DNS / Edit"
+        return 1
+      fi
+      CF_CHECK_ZONE_ID="$zid"
+      return 0
+    fi
+    candidate="${candidate#*.}"
+  done
+  CF_CHECK_ERROR="Token 有效，但看不到 $name 所在的域名；请确认域名已加到 Cloudflare，并且 Token 的 Zone Resources 包含它（还需要 Zone / Zone / Read 权限）"
+  return 1
+}
+
+# 交互式核对 Token；明确失败时打印原因和指南，让用户重填或坚持继续。
+# 返回 0 = 通过或用户选择继续；1 = 用户要重填。
+confirm_cf_token() {
+  local domain="$1" rc=0
+  log "正在在线检查 Cloudflare API Token..."
+  cf_token_check "$CF_Token" "$domain" || rc=$?
+  case "$rc" in
+    0)
+      log "Token 可用，域名 $CF_CHECK_ZONE 已就绪"
+      [[ "$AUTO_DOMAIN" == "true" && -z "$CF_Zone_ID" ]] && CF_Zone_ID="$CF_CHECK_ZONE_ID"
+      return 0
+      ;;
+    2)
+      log "暂时无法在线检查 Token（网络或工具缺失），跳过检查继续"
+      return 0
+      ;;
+  esac
+  err "$CF_CHECK_ERROR"
+  guide_api_token
+  [[ "$CF_CHECK_ERROR" == *"NS"* || "$CF_CHECK_ERROR" == *"加到 Cloudflare"* ]] && guide_domain
+  if [[ "$(normalize_bool "$(ask_choice "重新输入 Token 和域名 (y=重填 / n=忽略并继续)" "y")")" == "true" ]]; then
+    return 1
+  fi
+  log "已忽略 Token 检查，证书签发可能失败"
+  return 0
+}
+
+# 隧道部署后从公网走一遍：域名 -> Cloudflare -> 隧道 -> sing-box WS。
+# 只给出提示，不回滚。
+probe_tunnel_hostname() {
+  [[ "$DEPLOY_MODE" == "tunnel" && -n "$WS_HOST" ]] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  local ws_path code i
+  ws_path="$(docker exec singbox-warp sh -c 'cat /etc/sing-box/config.json' 2>/dev/null |
+    jq -r '.inbounds[]? | select((.transport.type // "") == "ws") | .transport.path // empty' 2>/dev/null | head -n1 || true)"
+  [[ -n "$ws_path" ]] || ws_path="/"
+  log "正在从公网检查 https://$WS_HOST ..."
+  for i in $(seq 1 8); do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --http1.1 --max-time 8 \
+      -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+      -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+      "https://${WS_HOST}${ws_path}" 2>/dev/null || true)"
+    [[ "$code" == "101" ]] && { log "公网访问正常: https://$WS_HOST 已通过隧道连到节点"; return 0; }
+    sleep 5
+  done
+  case "$code" in
+    000|"")
+      err "无法访问 https://$WS_HOST：域名没解析或 HTTPS 握手失败"
+      guide_line "  - 隧道里还没加 Published application 路由，或域名填错了" \
+        "  - 用了多级子域名（a.b.example.com），免费证书不覆盖，请换成一级子域名" ;;
+    502|504)
+      err "隧道已连上，但 Cloudflare 连不到节点（HTTP $code）"
+      guide_line "  - 隧道路由的 Service URL 必须是 http://singbox-warp:$WS_PORT（不是 https，也不是 localhost）" ;;
+    530|1033)
+      err "域名没有指向这个隧道（HTTP $code）"
+      guide_line "  - 在隧道的 Routes 里添加 Published application，域名填 $WS_HOST" ;;
+    404)
+      err "请求到了别的服务（HTTP 404）；请确认 $WS_HOST 路由到的是这个隧道，Service URL 为 http://singbox-warp:$WS_PORT" ;;
+    *)
+      err "公网检查未通过（HTTP $code）" ;;
+  esac
+  guide_line "  隧道设置入口: $GUIDE_CF_TUNNELS_URL" \
+    "  改好后无需重装，在菜单里选「诊断检查」再测一次"
+  return 0
+}
+
 cmd_update_script() {
   need_cmd curl
   local temp_file target remote_version
@@ -844,28 +1115,41 @@ collect_bootstrap_inputs() {
     DEPLOY_MODE="$(ask_input "部署模式 (direct/tunnel)" "direct")"
   done
   if [[ "$DEPLOY_MODE" == "tunnel" ]]; then
-    collect_tunnel_inputs
+    collect_tunnel_inputs "$mode"
     return 0
   fi
   ENABLE_WS="false"
 
+  [[ "$mode" == "install" ]] && guide_checklist direct
   printf "\n自动 TLS 配置\n" >&2
-  printf "需要 Cloudflare API Token（Zone / DNS / Edit 权限）。\n" >&2
-  printf "申请地址: https://dash.cloudflare.com/profile/api-tokens\n" >&2
+  [[ -n "$CF_Token" ]] || { guide_domain; guide_api_token; }
   AUTO_TLS="true"
-  printf "Cloudflare API Token 将明文显示，输入后请确认终端没有旁观者。\n" >&2
-  CF_Token="$(ask_input "Cloudflare API Token (可见输入)" "$CF_Token")"
-  while [[ -z "$CF_Token" ]]; do
-    CF_Token="$(ask_input "Cloudflare API Token (可见输入)" "$CF_Token")"
-    [[ -n "$CF_Token" ]] || err "Cloudflare API Token 不能为空"
+  while true; do
+    printf "Cloudflare API Token 将明文显示，输入后请确认终端没有旁观者。\n" >&2
+    CF_Token="$(trim_value "$(ask_input_guided "Cloudflare API Token (可见输入)" "$CF_Token" guide_api_token)")"
+    while [[ -z "$CF_Token" ]]; do
+      err "Cloudflare API Token 不能为空"
+      CF_Token="$(trim_value "$(ask_input_guided "Cloudflare API Token (可见输入)" "$CF_Token" guide_api_token)")"
+    done
+    AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
+    if [[ "$AUTO_DOMAIN" == "true" ]]; then
+      BASE_DOMAIN="$(trim_value "$(ask_input_guided "Cloudflare 主域名 (example.com)" "$BASE_DOMAIN" guide_domain)")"
+      while [[ -z "$BASE_DOMAIN" ]]; do
+        err "主域名不能为空"
+        BASE_DOMAIN="$(trim_value "$(ask_input_guided "Cloudflare 主域名 (example.com)" "$BASE_DOMAIN" guide_domain)")"
+      done
+      TLS_DOMAIN=""
+      CF_Zone_ID=""
+      confirm_cf_token "$BASE_DOMAIN" && break
+    else
+      TLS_DOMAIN="$(trim_value "$(ask_input_guided "TLS 域名 (例如 node.example.com)" "$TLS_DOMAIN" guide_domain)")"
+      while [[ -z "$TLS_DOMAIN" ]]; do
+        err "TLS 域名不能为空"
+        TLS_DOMAIN="$(trim_value "$(ask_input_guided "TLS 域名 (例如 node.example.com)" "$TLS_DOMAIN" guide_domain)")"
+      done
+      confirm_cf_token "$TLS_DOMAIN" && break
+    fi
   done
-  AUTO_DOMAIN="$(normalize_bool "$(ask_choice "自动生成子域名 (y/n)" "$AUTO_DOMAIN")")"
-  if [[ "$AUTO_DOMAIN" == "true" ]]; then
-    BASE_DOMAIN="$(ask_input "Cloudflare 主域名 (example.com)" "$BASE_DOMAIN")"
-    TLS_DOMAIN=""
-  else
-    TLS_DOMAIN="$(ask_input "TLS 域名" "$TLS_DOMAIN")"
-  fi
   ACME_EMAIL="$(ask_input "证书通知邮箱 (建议填写)" "$ACME_EMAIL")"
 
   printf "\n协议 / 端口配置\n" >&2
@@ -908,7 +1192,8 @@ collect_bootstrap_inputs() {
     AUTH_UUID="$(ask_input "AUTH_UUID (留空自动生成)" "$AUTH_UUID")"
     HY2_PASSWORD="$(ask_secret "HY2_PASSWORD (可选)" "$HY2_PASSWORD")"
     VLESS_UUID="$(ask_input "VLESS_UUID (可选)" "$VLESS_UUID")"
-    WARP_LICENSE_KEY="$(ask_secret "WARP_LICENSE_KEY (可选)" "$WARP_LICENSE_KEY")"
+    guide_warp_license
+    WARP_LICENSE_KEY="$(ask_secret "WARP_LICENSE_KEY (可选，留空用免费 WARP)" "$WARP_LICENSE_KEY")"
     TLS_ISSUE_RETRIES="$(ask_input "TLS 签发重试次数" "$TLS_ISSUE_RETRIES")"
     TLS_RENEW_INTERVAL="$(ask_input "TLS 续期间隔秒数" "$TLS_RENEW_INTERVAL")"
   fi
@@ -939,22 +1224,47 @@ collect_tunnel_inputs() {
   AUTO_TLS="false"
   AUTO_DOMAIN="false"
 
+  local mode="${1:-install}" raw tunnel_id
+  [[ "$mode" == "install" ]] && guide_checklist tunnel
   printf "\n隧道配置\n" >&2
-  printf "在 Cloudflare Zero Trust -> Networks -> Tunnels 新建隧道并复制 token。\n" >&2
-  printf "Public Hostname 的 Service 填: HTTP  singbox-warp:<WS 端口>\n" >&2
+  [[ -n "$CF_TUNNEL_TOKEN" ]] || guide_tunnel "$WS_PORT"
   printf "Tunnel token 将明文显示，输入后请确认终端没有旁观者。\n" >&2
-  CF_TUNNEL_TOKEN="$(ask_input "Cloudflare Tunnel token (可见输入)" "$CF_TUNNEL_TOKEN")"
-  while [[ -z "$CF_TUNNEL_TOKEN" ]]; do
-    err "Tunnel token 不能为空"
-    CF_TUNNEL_TOKEN="$(ask_input "Cloudflare Tunnel token (可见输入)" "$CF_TUNNEL_TOKEN")"
+  while true; do
+    raw="$(ask_input_guided "Cloudflare Tunnel token (可见输入，可粘贴整条安装命令)" "$CF_TUNNEL_TOKEN" guide_tunnel)"
+    CF_TUNNEL_TOKEN="$(extract_tunnel_token "$raw")"
+    if [[ -z "$CF_TUNNEL_TOKEN" ]]; then
+      err "Tunnel token 不能为空"
+      continue
+    fi
+    if tunnel_id="$(tunnel_token_id "$CF_TUNNEL_TOKEN")"; then
+      log "已识别隧道 ID: $tunnel_id"
+      break
+    fi
+    err "这不像 Tunnel token：应是 eyJ 开头的一长串（在隧道安装命令 --token 后面）"
+    guide_tunnel "$WS_PORT"
+    if [[ "$(normalize_bool "$(ask_choice "仍然使用这个 token (y/n)" "n")")" == "true" ]]; then
+      break
+    fi
   done
-  WS_HOST="$(ask_input "隧道公网域名 (例如 node.example.com)" "$WS_HOST")"
-  while [[ -z "$WS_HOST" ]]; do
-    err "隧道公网域名不能为空"
-    WS_HOST="$(ask_input "隧道公网域名 (例如 node.example.com)" "$WS_HOST")"
+  while true; do
+    WS_HOST="$(trim_value "$(ask_input_guided "隧道公网域名 (隧道路由里填的域名，例如 node.example.com)" "$WS_HOST" guide_tunnel)")"
+    WS_HOST="${WS_HOST#https://}"
+    WS_HOST="${WS_HOST#http://}"
+    WS_HOST="${WS_HOST%%/*}"
+    if [[ -z "$WS_HOST" ]]; then
+      err "隧道公网域名不能为空"
+    elif [[ ! "$WS_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]]; then
+      err "域名格式不对: $WS_HOST"
+    else
+      break
+    fi
   done
-  WS_PORT="$(ask_input "WS 端口 (仅 Docker 内网，需与隧道 Service 一致)" "$WS_PORT")"
-  WS_ADDRESS="$(ask_input "客户端连接地址 (优选 IP/域名，可留空)" "$WS_ADDRESS")"
+  if [[ "$(tr -cd '.' <<<"$WS_HOST" | wc -c)" -ge 3 ]]; then
+    log "提示: $WS_HOST 看起来是多级子域名；Cloudflare 免费证书只覆盖一级子域名（node.example.com），多级会握手失败"
+  fi
+  WS_PORT="$(ask_input "WS 端口 (仅 Docker 内网，需与隧道 Service URL 一致)" "$WS_PORT")"
+  log "请确认隧道路由的 Service URL 是: http://singbox-warp:$WS_PORT"
+  WS_ADDRESS="$(trim_value "$(ask_input "客户端连接地址 (优选 IP/域名，可留空)" "$WS_ADDRESS")")"
 
   collect_warp_inputs
 
@@ -963,7 +1273,8 @@ collect_tunnel_inputs() {
     AUTH_UUID="$(ask_input "AUTH_UUID (留空自动生成)" "$AUTH_UUID")"
     WS_PATH="$(ask_input "WS 路径 (留空自动生成)" "$WS_PATH")"
     CF_TUNNEL_PROTOCOL="$(ask_input "隧道协议 (auto/quic/http2)" "$CF_TUNNEL_PROTOCOL")"
-    WARP_LICENSE_KEY="$(ask_secret "WARP_LICENSE_KEY (可选)" "$WARP_LICENSE_KEY")"
+    guide_warp_license
+    WARP_LICENSE_KEY="$(ask_secret "WARP_LICENSE_KEY (可选，留空用免费 WARP)" "$WARP_LICENSE_KEY")"
   fi
 }
 
@@ -1747,6 +2058,7 @@ check_tunnel_connected() {
   for i in $(seq 1 20); do
     if docker logs --tail 200 singbox-warp-cloudflared 2>&1 | grep -q 'Registered tunnel connection'; then
       log "隧道已连接到 Cloudflare"
+      probe_tunnel_hostname
       return 0
     fi
     if ! docker inspect singbox-warp-cloudflared --format '{{.State.Running}}' 2>/dev/null | grep -Fxq true &&
@@ -1757,6 +2069,8 @@ check_tunnel_connected() {
   done
   err "cloudflared 未能连接到 Cloudflare；请检查 CF_TUNNEL_TOKEN，UDP 7844 不通时把 CF_TUNNEL_PROTOCOL 改为 http2"
   docker logs --tail 30 singbox-warp-cloudflared 2>&1 || true
+  guide_line "  token 填错的话，到这里重新复制: $GUIDE_CF_TUNNELS_URL" \
+    "  改 token 或协议: 菜单选「修改配置」"
   return 0
 }
 
@@ -1971,11 +2285,12 @@ cmd_rollback() {
 }
 
 cmd_bootstrap() {
+  # 先装 curl/jq，输入阶段就能在线校验 Token
+  ensure_host_tools
   collect_bootstrap_inputs install
   validate_config
   confirm_config || { log "已取消安装"; return 0; }
   ensure_docker
-  ensure_host_tools
   prepare_auto_domain
   finalize_node_name
 
@@ -2031,6 +2346,7 @@ cmd_edit_config() {
   }
   load_existing_env
   IMAGE="$(grep -E '^\s*image:\s*' "$COMPOSE_FILE" | head -n1 | sed -E 's/^\s*image:\s*//')"
+  ensure_host_tools
   collect_bootstrap_inputs edit
   validate_config
   confirm_config || { log "已取消修改"; return 0; }
@@ -2115,7 +2431,12 @@ cmd_diagnose() {
     else
       diag_fail "cloudflared 容器未运行"
     fi
-    if [[ -n "$WS_HOST" ]]; then diag_ok "隧道域名: $WS_HOST"; else diag_fail "WS_HOST 为空，无法生成节点链接"; fi
+    if [[ -n "$WS_HOST" ]]; then
+      diag_ok "隧道域名: $WS_HOST"
+      probe_tunnel_hostname
+    else
+      diag_fail "WS_HOST 为空，无法生成节点链接"
+    fi
   fi
 
   if [[ "$need_tls" != "true" ]]; then
@@ -2305,6 +2626,10 @@ main() {
     usage
     return 0
   fi
+  if [[ "${1:-}" == "guide" ]]; then
+    cmd_guide
+    return 0
+  fi
   if [[ -n "${1:-}" && "${1:-}" != "auto-update" ]]; then
     err "此脚本仅支持交互模式，请不要带参数直接运行"
     usage
@@ -2334,7 +2659,8 @@ main() {
       12) cmd_auto_update_settings || true ;;
       13) cmd_rollback || true ;;
       14) cmd_uninstall || true ;;
-      15) log "退出"; return 0 ;;
+      15) cmd_guide ;;
+      16) log "退出"; return 0 ;;
     esac
   done
 }

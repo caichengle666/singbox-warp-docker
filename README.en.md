@@ -103,8 +103,8 @@ These can be changed if needed, but the service can still start with defaults:
 For hosts with no inbound ports that can only be reached through Cloudflare Tunnel (cloud sandboxes such as InstaBox, NAT VPS, home lines).
 It runs two containers: this image (VLESS-WS only, no published ports) and `cloudflared`. No certificate and no extra sidecar sing-box are needed.
 
-1. Create a tunnel in Cloudflare Zero Trust -> Networks -> Tunnels and copy its token
-2. Add a Public Hostname: your hostname (for example `node.example.com`), Service `HTTP` + `singbox-warp:8080` (port matches `WS_PORT`)
+1. Open [Cloudflare Tunnels](https://dash.cloudflare.com/?to=/:account/tunnels) (Networking -> Tunnels), create a Cloudflared tunnel and copy the `eyJ...` string after `--token` in the install command (pasting the whole command into the script also works)
+2. On the tunnel's Routes tab add a Published application (formerly Public Hostname): a single-level hostname such as `node.example.com`, Service URL `http://singbox-warp:8080` (port matches `WS_PORT`)
 3. Deploy:
    - Interactive script: choose `tunnel` as the deploy mode during first install
    - Manual: put `CF_TUNNEL_TOKEN=...` and `WS_HOST=node.example.com` in `.env`, then `docker compose -f docker-compose.tunnel.yml up -d`
@@ -311,8 +311,10 @@ The repository includes `deploy.sh` for repeatable VPS deployment workflows.
 Interactive one-command setup (recommended for a fresh VPS):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh | bash
+curl -fsSL https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh -o deploy.sh && bash deploy.sh
 ```
+
+Not sure how to get a Cloudflare API token or tunnel token? The script prints the sign-up links and step-by-step instructions at each prompt (type `?` to see them again), checks the API token online, and in tunnel mode tests the public hostname end to end after deploying. To just print the guide: `bash deploy.sh guide`.
 
 What this interactive script does:
 
