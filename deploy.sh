@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.5.0"
+SCRIPT_VERSION="2.5.1"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -816,7 +816,7 @@ guide_tunnel() {
   local port="${1:-$WS_PORT}"
   guide_title "申请 Cloudflare Tunnel token"
   guide_line \
-    "  前提: 域名已托管在 Cloudflare（还没有的话先看 deploy.sh guide 里的域名部分）" \
+    "  前提: 域名已托管在 Cloudflare（还没有的话先看菜单 15「申请指南」里的域名部分）" \
     "  1. 打开: $GUIDE_CF_TUNNELS_URL" \
     "     （登录后进入 Networking -> Tunnels；旧版界面在 Zero Trust -> Networks -> Tunnels）" \
     "  2. 点 Create a tunnel，类型选 Cloudflared，起个名字后保存" \
@@ -1245,6 +1245,8 @@ collect_tunnel_inputs() {
     if [[ "$(normalize_bool "$(ask_choice "仍然使用这个 token (y/n)" "n")")" == "true" ]]; then
       break
     fi
+    # 不把填错的值当默认值，避免直接回车又用上它
+    CF_TUNNEL_TOKEN=""
   done
   while true; do
     WS_HOST="$(trim_value "$(ask_input_guided "隧道公网域名 (隧道路由里填的域名，例如 node.example.com)" "$WS_HOST" guide_tunnel)")"
@@ -2053,6 +2055,7 @@ wait_healthy() {
 # 隧道模式：容器健康只说明 sing-box 在跑，还要确认 cloudflared 连上了 Cloudflare。
 # 连不上通常是 token 错误或 UDP 7844 被封，只给出提示，不回滚配置。
 check_tunnel_connected() {
+  TUNNEL_FAILED=false
   [[ "$DEPLOY_MODE" == "tunnel" ]] || return 0
   local i
   for i in $(seq 1 20); do
@@ -2067,8 +2070,18 @@ check_tunnel_connected() {
     fi
     sleep 3
   done
-  err "cloudflared 未能连接到 Cloudflare；请检查 CF_TUNNEL_TOKEN，UDP 7844 不通时把 CF_TUNNEL_PROTOCOL 改为 http2"
-  docker logs --tail 30 singbox-warp-cloudflared 2>&1 || true
+  local cf_logs
+  cf_logs="$(docker logs --tail 200 singbox-warp-cloudflared 2>&1 || true)"
+  TUNNEL_FAILED=true
+  if grep -Eq 'Failed to get tunnel|Unauthorized|invalid token|not valid|Provided Tunnel token is not valid' <<<"$cf_logs"; then
+    err "隧道没连上：Cloudflare 不认这个 token（token 复制错了，或这个隧道已被删除）"
+  elif grep -Eq '7844|quic.*(timeout|failed)|no recent network activity' <<<"$cf_logs"; then
+    err "隧道没连上：连不到 Cloudflare 的 7844 端口；把 CF_TUNNEL_PROTOCOL 改为 http2 再试"
+  else
+    err "cloudflared 未能连接到 Cloudflare；请检查 CF_TUNNEL_TOKEN，UDP 7844 不通时把 CF_TUNNEL_PROTOCOL 改为 http2"
+  fi
+  printf "cloudflared 最近日志:\n" >&2
+  grep -E ' ERR ' <<<"$cf_logs" | sed 's/.* ERR /  ERR /' | sort -u | tail -n 5 >&2 || true
   guide_line "  token 填错的话，到这里重新复制: $GUIDE_CF_TUNNELS_URL" \
     "  改 token 或协议: 菜单选「修改配置」"
   return 0
@@ -2309,7 +2322,11 @@ cmd_bootstrap() {
   }
   check_tunnel_connected
   persist_active_app_dir
-  log "初始化部署完成: $APP_DIR"
+  if [[ "${TUNNEL_FAILED:-false}" == "true" ]]; then
+    err "部署已完成，但隧道还没连上，节点暂时不能用: $APP_DIR"
+  else
+    log "初始化部署完成: $APP_DIR"
+  fi
 }
 
 cmd_update_image() {
