@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.5.1"
+SCRIPT_VERSION="2.5.2"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -78,6 +78,7 @@ STATE_DIR="$APP_DIR/$STATE_DIR_NAME"
 ROLLBACK_FILE="$STATE_DIR/last_image.txt"
 CONFIG_BACKUP_DIR="$STATE_DIR/config-backup"
 UPDATE_IMAGE_FILE="$STATE_DIR/update_image.txt"
+CF_ROLLBACK_FILE="$STATE_DIR/last_cloudflared_image.txt"
 BACKUP_DIR="$APP_DIR/backups"
 
 refresh_paths() {
@@ -87,6 +88,7 @@ refresh_paths() {
   ROLLBACK_FILE="$STATE_DIR/last_image.txt"
   CONFIG_BACKUP_DIR="$STATE_DIR/config-backup"
   UPDATE_IMAGE_FILE="$STATE_DIR/update_image.txt"
+  CF_ROLLBACK_FILE="$STATE_DIR/last_cloudflared_image.txt"
   BACKUP_DIR="$APP_DIR/backups"
 }
 
@@ -1895,6 +1897,32 @@ record_current_image_for_rollback() {
   fi
 }
 
+# 隧道模式：记录当前 cloudflared 镜像（优先 digest），更新后隧道断开时用来回滚
+record_current_cloudflared_for_rollback() {
+  rm -f "$CF_ROLLBACK_FILE"
+  docker inspect singbox-warp-cloudflared >/dev/null 2>&1 || return 0
+  mkdir -p "$STATE_DIR"
+  local image_id repo_digest
+  image_id="$(docker inspect singbox-warp-cloudflared --format '{{.Image}}')"
+  repo_digest="$(docker image inspect "$image_id" --format '{{index .RepoDigests 0}}' 2>/dev/null || true)"
+  if [[ -n "$repo_digest" && "$repo_digest" != "<no value>" ]]; then
+    printf '%s\n' "$repo_digest" >"$CF_ROLLBACK_FILE"
+  else
+    printf '%s\n' "$image_id" >"$CF_ROLLBACK_FILE"
+  fi
+}
+
+# 改写 compose 里 cloudflared 服务的 image 行
+set_cloudflared_image() {
+  local image="$1"
+  grep -Eq '^[[:space:]]*cloudflared:[[:space:]]*$' "$COMPOSE_FILE" || return 0
+  sed -i -E "/^[[:space:]]*cloudflared:[[:space:]]*$/,/^[[:space:]]*image:/s#^([[:space:]]*image:[[:space:]]*).+#\1${image}#" "$COMPOSE_FILE"
+}
+
+tunnel_registered() {
+  docker logs singbox-warp-cloudflared 2>&1 | grep 'Registered tunnel connection' >/dev/null
+}
+
 backup_config() {
   mkdir -p "$CONFIG_BACKUP_DIR"
   cp -f "$ENV_FILE" "$CONFIG_BACKUP_DIR/$ENV_FILE_NAME"
@@ -2280,6 +2308,13 @@ apply_rollback_image() {
   if ! docker image inspect "$rollback_image" >/dev/null 2>&1; then
     docker pull "$rollback_image"
   fi
+  # 隧道模式：cloudflared 也回到更新前的镜像
+  local cf_image=""
+  [[ -s "$CF_ROLLBACK_FILE" ]] && cf_image="$(cat "$CF_ROLLBACK_FILE")"
+  if [[ -n "$cf_image" ]]; then
+    set_cloudflared_image "$cf_image"
+    docker image inspect "$cf_image" >/dev/null 2>&1 || docker pull "$cf_image" || true
+  fi
   (
     cd "$APP_DIR"
     docker compose up -d
@@ -2338,7 +2373,17 @@ cmd_update_image() {
   if [[ -s "$UPDATE_IMAGE_FILE" ]] && grep -Eq '^[[:space:]]*image:[[:space:]]*([^[:space:]]+@sha256:|sha256:)' "$COMPOSE_FILE"; then
     sed -i -E "0,/^[[:space:]]*image:/s#^([[:space:]]*image:[[:space:]]*).+#\1$(cat "$UPDATE_IMAGE_FILE")#" "$COMPOSE_FILE"
   fi
+  load_existing_env
   record_current_image_for_rollback
+  local tunnel_was_up=false
+  if [[ "$DEPLOY_MODE" == "tunnel" ]]; then
+    record_current_cloudflared_for_rollback
+    tunnel_registered && tunnel_was_up=true
+    # 上次回滚可能把 cloudflared 固定在 digest，更新时回到配置的镜像
+    set_cloudflared_image "${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}"
+  else
+    rm -f "$CF_ROLLBACK_FILE"
+  fi
   if ! (
     cd "$APP_DIR"
     docker compose pull
@@ -2352,6 +2397,24 @@ cmd_update_image() {
     err "新镜像健康检查失败，正在恢复旧镜像"
     apply_rollback_image "$(cat "$ROLLBACK_FILE")"
     return 1
+  fi
+  if [[ "$DEPLOY_MODE" == "tunnel" ]]; then
+    check_tunnel_connected
+    if [[ "$TUNNEL_FAILED" == "true" ]]; then
+      if [[ "$tunnel_was_up" == "true" ]]; then
+        err "更新前隧道正常、更新后断开，正在恢复旧镜像（含 cloudflared）"
+        apply_rollback_image "$(cat "$ROLLBACK_FILE")" || return 1
+        check_tunnel_connected
+        if [[ "$TUNNEL_FAILED" == "true" ]]; then
+          err "回滚后隧道仍未连上，请运行「诊断」排查"
+        else
+          log "已恢复到更新前的镜像，隧道正常；下次更新会再试新版本"
+        fi
+      else
+        err "更新前隧道就没连上，与本次更新无关，未回滚"
+      fi
+      return 1
+    fi
   fi
   log "镜像更新完成，现有配置未改变"
 }
