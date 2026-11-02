@@ -295,6 +295,17 @@ usque_running() {
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
+# kill -0 also succeeds on a zombie (exited, not yet reaped by its parent), so
+# treat state Z as gone.
+pid_alive() {
+  local state=""
+  kill -0 "$1" 2>/dev/null || return 1
+  if [ -r "/proc/$1/stat" ]; then
+    state="$(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f1)"
+  fi
+  [ "$state" != "Z" ]
+}
+
 # usque may be started by the main shell or by the monitor subshell, so the
 # PID lives in a file instead of a shell variable that only one of them sees.
 stop_usque() {
@@ -304,11 +315,24 @@ stop_usque() {
     echo "[usque] stopping"
     kill -TERM "$pid" 2>/dev/null || true
     for i in 1 2 3 4 5 6 7 8 9 10; do
-      kill -0 "$pid" 2>/dev/null || break
+      pid_alive "$pid" || break
       sleep 0.5
     done
-    kill -KILL "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
+    if pid_alive "$pid"; then
+      kill -KILL "$pid" 2>/dev/null || true
+      # A process stuck in uninterruptible sleep (D state, e.g. under memory or
+      # disk pressure) ignores SIGKILL until it leaves the kernel. An unbounded
+      # wait here would freeze the monitor loop, so give up after a while.
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        pid_alive "$pid" || break
+        sleep 0.5
+      done
+    fi
+    if pid_alive "$pid"; then
+      echo "[usque] pid $pid did not exit after SIGKILL (likely stuck in the kernel); continuing without waiting"
+    else
+      wait "$pid" 2>/dev/null || true
+    fi
   fi
   rm -f "$USQUE_PID_FILE"
 }
