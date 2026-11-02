@@ -75,6 +75,11 @@ USQUE_READY_TIMEOUT=10
 WARP_FAIL_THRESHOLD=3
 WARP_FAIL_RECHECK_INTERVAL=10
 WARP_RETRY_MAX_INTERVAL=900
+# An egress must stay healthy this long after (re)connecting before the retry
+# backoff resets; failing sooner counts as flapping and keeps backing off.
+WARP_STABLE_WINDOW=600
+# Hard wall-clock cap around each probe curl, on top of curl --max-time.
+WARP_PROBE_HARD_TIMEOUT=8
 HY2_PORT_HOPPING_ENV="${HY2_PORT_HOPPING:-false}"
 HY2_HOP_PORTS_ENV="${HY2_HOP_PORTS:-}"
 RULESET_DIR="${WGCF_DIR}/rulesets"
@@ -417,7 +422,7 @@ usque_probe_once() {
   usque_running || return 1
   local probe_url
   for probe_url in "${WARP_PROBE_URLS[@]}"; do
-    if curl -fsS --connect-timeout 2 --max-time 5 \
+    if timeout -k 2 "$WARP_PROBE_HARD_TIMEOUT" curl -fsS --connect-timeout 2 --max-time 5 \
       --proxy "socks5h://127.0.0.1:${USQUE_PORT}" "$probe_url" >/dev/null 2>&1; then
       return 0
     fi
@@ -480,7 +485,7 @@ warp_probe_once() {
   [ -n "$SINGBOX_PID" ] && kill -0 "$SINGBOX_PID" 2>/dev/null || return 1
   for i in 1 2 3; do
     for probe_url in "${WARP_PROBE_URLS[@]}"; do
-      if curl -fsS --connect-timeout 2 --max-time 4 \
+      if timeout -k 2 "$WARP_PROBE_HARD_TIMEOUT" curl -fsS --connect-timeout 2 --max-time 4 \
         --proxy "socks5h://127.0.0.1:${WARP_PROBE_PORT}" \
         "$probe_url" >/dev/null 2>&1; then
         return 0
@@ -504,11 +509,28 @@ route_probe() {
 #   every route switch reloads sing-box and drops all client connections.
 # - While on direct, recovery attempts back off from WARP_PROBE_INTERVAL up to
 #   WARP_RETRY_MAX_INTERVAL instead of restarting usque every interval.
+# - The backoff only resets after an egress has stayed healthy for
+#   WARP_STABLE_WINDOW. An egress that fails again sooner is flapping: drop to
+#   direct and keep backing off, instead of restarting usque every minute or two
+#   while client connections pile up on a half-dead tunnel.
+warp_backoff_grow() {
+  backoff=$((backoff * 2))
+  if [ "$backoff" -gt "$WARP_RETRY_MAX_INTERVAL" ]; then
+    backoff="$WARP_RETRY_MAX_INTERVAL"
+  fi
+  if [ "$backoff" -lt "$WARP_PROBE_INTERVAL_ENV" ]; then
+    backoff="$WARP_PROBE_INTERVAL_ENV"
+  fi
+}
+
 warp_monitor_loop() {
   local current_route last_ok="" fail_count=0 now
   local backoff="$WARP_PROBE_INTERVAL_ENV" next_retry sleep_for
+  local up_since
   # Startup has just tried every egress, so the first retry waits one interval.
-  next_retry=$(( $(date +%s) + WARP_PROBE_INTERVAL_ENV ))
+  now="$(date +%s)"
+  next_retry=$(( now + WARP_PROBE_INTERVAL_ENV ))
+  up_since="$now"
   while [ "$STOP_REQUESTED" != "true" ]; do
     sleep_for="$WARP_PROBE_INTERVAL_ENV"
     current_route="$(cat "$WARP_ROUTE_STATE_FILE" 2>/dev/null || printf 'direct')"
@@ -522,6 +544,11 @@ warp_monitor_loop() {
           fi
           fail_count=0
           last_ok="$current_route"
+          now="$(date +%s)"
+          if [ "$backoff" -ne "$WARP_PROBE_INTERVAL_ENV" ] && [ $((now - up_since)) -ge "$WARP_STABLE_WINDOW" ]; then
+            backoff="$WARP_PROBE_INTERVAL_ENV"
+            echo "[warp] $current_route stable for ${WARP_STABLE_WINDOW}s; retry backoff reset"
+          fi
         else
           fail_count=$((fail_count + 1))
           if [ "$fail_count" -lt "$WARP_FAIL_THRESHOLD" ]; then
@@ -530,20 +557,30 @@ warp_monitor_loop() {
               sleep_for="$WARP_FAIL_RECHECK_INTERVAL"
             fi
           else
-            echo "[warp] $current_route failed $fail_count probes in a row; failing over"
             fail_count=0
             last_ok=""
-            if try_warp_egress "$current_route"; then
-              current_route="$(cat "$WARP_ROUTE_STATE_FILE" 2>/dev/null || true)"
-              echo "[warp] now using $current_route"
-              last_ok="$current_route"
-              backoff="$WARP_PROBE_INTERVAL_ENV"
-            else
+            now="$(date +%s)"
+            if [ $((now - up_since)) -lt "$WARP_STABLE_WINDOW" ]; then
+              # Came up less than WARP_STABLE_WINDOW ago and already failing.
+              warp_backoff_grow
               stop_usque
               set_route_outbound "direct" || true
-              now="$(date +%s)"
               next_retry=$((now + backoff))
-              echo "[warp] no WARP egress available; using direct, next attempt in ${backoff}s"
+              echo "[warp] $current_route failed again $((now - up_since))s after connecting (flapping); using direct, next attempt in ${backoff}s"
+            else
+              echo "[warp] $current_route failed $WARP_FAIL_THRESHOLD probes in a row; failing over"
+              if try_warp_egress "$current_route"; then
+                current_route="$(cat "$WARP_ROUTE_STATE_FILE" 2>/dev/null || true)"
+                echo "[warp] now using $current_route"
+                last_ok="$current_route"
+                up_since="$(date +%s)"
+              else
+                stop_usque
+                set_route_outbound "direct" || true
+                now="$(date +%s)"
+                next_retry=$((now + backoff))
+                echo "[warp] no WARP egress available; using direct, next attempt in ${backoff}s"
+              fi
             fi
           fi
         fi
@@ -555,16 +592,10 @@ warp_monitor_loop() {
             current_route="$(cat "$WARP_ROUTE_STATE_FILE" 2>/dev/null || true)"
             echo "[warp] recovered; now using $current_route"
             last_ok="$current_route"
-            backoff="$WARP_PROBE_INTERVAL_ENV"
+            up_since="$(date +%s)"
           else
             stop_usque
-            backoff=$((backoff * 2))
-            if [ "$backoff" -gt "$WARP_RETRY_MAX_INTERVAL" ]; then
-              backoff="$WARP_RETRY_MAX_INTERVAL"
-            fi
-            if [ "$backoff" -lt "$WARP_PROBE_INTERVAL_ENV" ]; then
-              backoff="$WARP_PROBE_INTERVAL_ENV"
-            fi
+            warp_backoff_grow
             next_retry=$((now + backoff))
             echo "[warp] still unavailable; next attempt in ${backoff}s"
           fi

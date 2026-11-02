@@ -43,7 +43,7 @@ services:
       - ./acme:/var/lib/acme
     security_opt:
       - no-new-privileges:true
-    mem_limit: 512m
+    mem_limit: ${MEM_LIMIT:-768m}
     pids_limit: 256
     healthcheck:
       # WARP 故障时仍保持 healthy；出口可用性由 entrypoint 的探测器负责切换

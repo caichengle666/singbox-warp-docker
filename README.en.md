@@ -94,7 +94,7 @@ These can be changed if needed, but the service can still start with defaults:
 - `.env` `NODE_NAME`, optional; auto-generated from IP/city when left empty
 - `.env` `WARP_MODE`, default `auto`; one of `auto` / `usque` / `wireguard` / `direct`
 - `.env` `WARP_AUTORECOVER`, default `true`; stays on direct while WARP is down, switches back automatically once it recovers
-- `.env` `WARP_PROBE_INTERVAL`, default `60` (seconds), WARP health-check interval. The active egress is only abandoned after 3 consecutive failed probes (rechecked every 10s), so a blip doesn't drop every connection; while on direct, retries back off from the interval, doubling up to 15 minutes; a failed usque registration is not retried for 1 hour
+- `.env` `WARP_PROBE_INTERVAL`, default `60` (seconds), WARP health-check interval. The active egress is only abandoned after 3 consecutive failed probes (rechecked every 10s), so a blip doesn't drop every connection; while on direct, retries back off from the interval, doubling up to 15 minutes; an egress that fails again within 10 minutes of reconnecting counts as flapping and goes back to direct with the backoff still growing (it only resets after 10 stable minutes); a failed usque registration is not retried for 1 hour
 - `.env` `USQUE_HTTP2`, default `true`; usque uses MASQUE over HTTP/2 (TCP 443)
 - `./data/wgcf-account.toml`, if you already have a WARP account file to reuse
 
@@ -325,7 +325,7 @@ What this interactive script does:
 
 ## Runtime Safety
 
-- Basic resource limits are set in `docker-compose.yml`: `mem_limit=512m`, `pids_limit=256`
+- Basic resource limits are set in `docker-compose.yml`: `mem_limit` defaults to 768m (override with `MEM_LIMIT` in `.env`, e.g. `1g`), `pids_limit=256`
 - Healthcheck is enabled for the `sing-box` main process
 - `.env` is ignored by git
 - The main service is `sing-box`; certificate renewal is handled by a lightweight shell loop with signal forwarding and graceful shutdown

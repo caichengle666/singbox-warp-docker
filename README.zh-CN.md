@@ -122,7 +122,7 @@ bash deploy.sh guide
 - `.env` `NODE_NAME`，可选；留空时由一键脚本按 IP/城市自动生成节点名前缀
 - `.env` `WARP_MODE`，默认 `auto`；可选 `auto` / `usque` / `wireguard` / `direct`
 - `.env` `WARP_AUTORECOVER`，默认 `true`；WARP 不可用时先走 direct，恢复后自动切回
-- `.env` `WARP_PROBE_INTERVAL`，默认 `60`（秒），WARP 健康检查间隔；正在使用的出口连续 3 次探测失败（失败后每 10 秒复查）才切换，避免网络抖动导致所有连接被断开；走 direct 时按 60 秒起、每次翻倍、最长 15 分钟的间隔重试；usque 注册失败后 1 小时内不再重试
+- `.env` `WARP_PROBE_INTERVAL`，默认 `60`（秒），WARP 健康检查间隔；正在使用的出口连续 3 次探测失败（失败后每 10 秒复查）才切换，避免网络抖动导致所有连接被断开；走 direct 时按 60 秒起、每次翻倍、最长 15 分钟的间隔重试；WARP 恢复后不足 10 分钟又失败视为抖动，直接回 direct 并继续拉长间隔，稳定 10 分钟后才重置；usque 注册失败后 1 小时内不再重试
 - `.env` `USQUE_HTTP2`，默认 `true`；usque 走 MASQUE over HTTP/2（TCP 443）
 - `./data/wgcf-account.toml`，如果你已有 WARP 账户文件，可直接复用
 
@@ -386,7 +386,7 @@ chmod +x ./deploy.sh
 
 ## 运行安全
 
-- `docker-compose.yml` 已添加基础资源限制：`mem_limit=512m`、`pids_limit=256`
+- `docker-compose.yml` 已添加基础资源限制：`mem_limit` 默认 768m（`.env` 里 `MEM_LIMIT` 可改，如 `1g`）、`pids_limit=256`
 - 已添加健康检查，检查 `sing-box` 主进程
 - `.env` 已加入 `.gitignore`
 - 容器主服务是 `sing-box`，证书续期由轻量 shell 循环托管，并已添加信号转发与优雅停机

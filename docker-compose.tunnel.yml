@@ -27,7 +27,7 @@ services:
       - ./data:/var/lib/wgcf
     security_opt:
       - no-new-privileges:true
-    mem_limit: 512m
+    mem_limit: ${MEM_LIMIT:-768m}
     pids_limit: 256
     healthcheck:
       test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"$(cat /run/sing-box.pid)\""]
