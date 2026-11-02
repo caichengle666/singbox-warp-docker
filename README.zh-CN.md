@@ -387,7 +387,7 @@ chmod +x ./deploy.sh
 ## 运行安全
 
 - `docker-compose.yml` 已添加基础资源限制：`mem_limit` 默认 768m（`.env` 里 `MEM_LIMIT` 可改，如 `1g`）、`pids_limit=256`
-- 已添加健康检查，检查 `sing-box` 主进程
+- 已添加健康检查：`sing-box` 主进程存活，且经本机 Mixed 入站按当前出口真实出网（WARP 不可用而回退 direct 时仍算正常）
 - `.env` 已加入 `.gitignore`
 - 容器主服务是 `sing-box`，证书续期由轻量 shell 循环托管，并已添加信号转发与优雅停机
 

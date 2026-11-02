@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.5.2"
+SCRIPT_VERSION="2.5.3"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -1634,11 +1634,13 @@ services:
     mem_limit: \${MEM_LIMIT:-768m}
     pids_limit: 256
     healthcheck:
-      test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"\$(cat /run/sing-box.pid)\""]
+      # 经 MIXED 入站按当前出口真实出网（WARP 或已回退的 direct 都算正常）；
+      # 只查进程会把"进程活着但不转发"误报成 healthy
+      test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"\$(cat /run/sing-box.pid)\" && { curl -fsS -o /dev/null --max-time 8 --proxy socks5h://127.0.0.1:\$\${MIXED_PORT:-1080} https://www.cloudflare.com/cdn-cgi/trace || curl -fsS -o /dev/null --max-time 8 --proxy socks5h://127.0.0.1:\$\${MIXED_PORT:-1080} https://www.gstatic.com/generate_204; }"]
       interval: 30s
-      timeout: 5s
+      timeout: 20s
       retries: 3
-      start_period: 20s
+      start_period: 60s
     logging:
       driver: json-file
       options:
@@ -1750,11 +1752,13 @@ ${ports_block}
     mem_limit: \${MEM_LIMIT:-768m}
     pids_limit: 256
     healthcheck:
-      test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"\$(cat /run/sing-box.pid)\""]
+      # 经 MIXED 入站按当前出口真实出网（WARP 或已回退的 direct 都算正常）；
+      # 只查进程会把"进程活着但不转发"误报成 healthy
+      test: ["CMD-SHELL", "test -s /run/sing-box.pid && kill -0 \"\$(cat /run/sing-box.pid)\" && { curl -fsS -o /dev/null --max-time 8 --proxy socks5h://127.0.0.1:\$\${MIXED_PORT:-1080} https://www.cloudflare.com/cdn-cgi/trace || curl -fsS -o /dev/null --max-time 8 --proxy socks5h://127.0.0.1:\$\${MIXED_PORT:-1080} https://www.gstatic.com/generate_204; }"]
       interval: 30s
-      timeout: 5s
+      timeout: 20s
       retries: 3
-      start_period: 20s
+      start_period: 60s
     logging:
       driver: json-file
       options:
