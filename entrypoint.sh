@@ -35,11 +35,27 @@ WARP_SPLIT_DOMAINS_ENV="${WARP_SPLIT_DOMAINS:-}"
 RULESET_BASE_URL_ENV="${RULESET_BASE_URL:-https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set}"
 MIXED_PORT_ENV="${MIXED_PORT:-1080}"
 # The mixed proxy has no auth. Bridge mode: listen on all container interfaces, the
-# compose file publishes it on host 127.0.0.1 only. Host network (docker0 is visible
-# here): publishing is ignored, so listen on loopback or it is an open proxy.
+# compose file publishes it on host 127.0.0.1 only. Host network: publishing is
+# ignored, so listen on loopback or it is an open proxy. deploy.sh passes
+# MIXED_LISTEN explicitly; without it, guess: a bridge-mode container only has lo
+# and eth*, so any other interface (docker0, ens3, enp0s6, wlan0...) means the
+# host's network namespace. The route rule rejecting public sources on mixed-in
+# is the backstop if the guess is wrong.
+detect_mixed_listen() {
+  local iface name
+  for iface in /sys/class/net/*; do
+    name="${iface##*/}"
+    case "$name" in
+      # The kernel adds these fallback tunnel devices to every new network
+      # namespace when their modules are loaded, so they say nothing.
+      lo|eth[0-9]*|tunl0|sit0|ip6tnl0|ip6gre0|gre0|gretap0|erspan0|ip_vti0|ip6_vti0|'*') ;;
+      *) printf '127.0.0.1'; return 0 ;;
+    esac
+  done
+  printf '0.0.0.0'
+}
 if [ -n "${MIXED_LISTEN:-}" ]; then MIXED_LISTEN_ENV="$MIXED_LISTEN"
-elif [ -e /sys/class/net/docker0 ]; then MIXED_LISTEN_ENV="127.0.0.1"
-else MIXED_LISTEN_ENV="0.0.0.0"; fi
+else MIXED_LISTEN_ENV="$(detect_mixed_listen)"; fi
 AUTO_TLS_ENV="${AUTO_TLS:-false}"
 TLS_DOMAIN_ENV="${TLS_DOMAIN:-}"
 ACME_EMAIL_ENV="${ACME_EMAIL:-}"
@@ -553,8 +569,32 @@ warp_backoff_grow() {
   fi
 }
 
+# Number of processes the kernel OOM-killed in this container's cgroup, or
+# empty when the counter can't be read (cgroup v2 memory.events, v1 oom_control).
+oom_kill_count() {
+  local f
+  for f in /sys/fs/cgroup/memory.events /sys/fs/cgroup/memory/memory.oom_control; do
+    if [ -r "$f" ]; then
+      sed -n 's/^oom_kill //p' "$f" 2>/dev/null | head -n1
+      return 0
+    fi
+  done
+}
+
+# An OOM kill otherwise only shows up in the host's dmesg; say it in our log.
+report_oom_kills() {
+  local count limit
+  count="$(oom_kill_count)"
+  [[ "$count" =~ ^[0-9]+$ ]] || return 0
+  if [ -n "$oom_seen" ] && [ "$count" -gt "$oom_seen" ]; then
+    limit="$(cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo unknown)"
+    echo "[mem] container hit its memory limit ($limit bytes): $((count - oom_seen)) process(es) OOM-killed, $count in total since start"
+  fi
+  oom_seen="$count"
+}
+
 warp_monitor_loop() {
-  local current_route last_ok="" fail_count=0 now
+  local current_route last_ok="" fail_count=0 now oom_seen="" usque_gone_logged=""
   local backoff="$WARP_PROBE_INTERVAL_ENV" next_retry sleep_for
   local up_since
   # Startup has just tried every egress, so the first retry waits one interval.
@@ -563,7 +603,16 @@ warp_monitor_loop() {
   up_since="$now"
   while [ "$STOP_REQUESTED" != "true" ]; do
     sleep_for="$WARP_PROBE_INTERVAL_ENV"
+    report_oom_kills
     current_route="$(cat "$WARP_ROUTE_STATE_FILE" 2>/dev/null || printf 'direct')"
+    if [ "$current_route" = "usque" ] && ! usque_running; then
+      if [ -z "$usque_gone_logged" ]; then
+        echo "[usque] process exited unexpectedly (crashed or killed; see [mem] lines for OOM)"
+        usque_gone_logged="true"
+      fi
+    else
+      usque_gone_logged=""
+    fi
     case "$current_route" in
       usque|warp)
         if route_probe "$current_route"; then
@@ -749,6 +798,12 @@ validate_required_config() {
   validate_port "REALITY_PORT" "$REALITY_PORT_ENV"
   validate_port "WS_PORT" "$WS_PORT_ENV"
   validate_port "MIXED_PORT" "$MIXED_PORT_ENV"
+  # Only plain IPv4/IPv6 literals: the value is substituted into the config.
+  if ! [[ "$MIXED_LISTEN_ENV" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ || "$MIXED_LISTEN_ENV" =~ ^[0-9A-Fa-f:]+$ ]]; then
+    echo "[config] MIXED_LISTEN must be an IP address such as 127.0.0.1 or 0.0.0.0, got: $MIXED_LISTEN_ENV"
+    exit 1
+  fi
+  echo "[config] mixed proxy (no auth) listens on ${MIXED_LISTEN_ENV}:${MIXED_PORT_ENV}"
 
   # Enabled inbound ports (plus MIXED) must be unique and must not take the
   # loopback ports used internally for WARP probing and usque.

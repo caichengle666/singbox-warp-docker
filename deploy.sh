@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.5.3"
+SCRIPT_VERSION="2.5.4"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -42,6 +42,8 @@ CF_TUNNEL_TOKEN="${CF_TUNNEL_TOKEN:-}"
 CF_TUNNEL_PROTOCOL="${CF_TUNNEL_PROTOCOL:-auto}"
 CLOUDFLARED_IMAGE="${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}"
 MEM_LIMIT="${MEM_LIMIT:-768m}"
+# bridge（默认，端口映射）或 host（容器直接用宿主网络）；留空时沿用现有 compose 的模式
+NETWORK_MODE="${NETWORK_MODE:-}"
 TUIC_PASSWORD="${TUIC_PASSWORD:-}"
 WARP_SCOPE="${WARP_SCOPE:-all}"
 WARP_SPLIT_GEOSITE="${WARP_SPLIT_GEOSITE-openai,anthropic,google-gemini,netflix,disney}"
@@ -160,6 +162,7 @@ Environment:
   WARP_SPLIT_GEOSITE 逗号分隔的 geosite 名称，默认 openai,anthropic,google-gemini,netflix,disney
   WARP_SPLIT_DOMAINS 逗号分隔的额外域名后缀，可选
   MIXED_PORT      默认 1080，仅绑定宿主机 127.0.0.1，给本机 HTTP+SOCKS5 代理使用
+  NETWORK_MODE    bridge（默认，端口映射）或 host（用宿主网络，Mixed 只听 127.0.0.1）；留空沿用现有 compose
   AUTH_UUID       可选，固定认证值
   HY2_PASSWORD    可选，覆盖 HY2 密码
   VLESS_UUID      可选，覆盖 VLESS UUID
@@ -1085,7 +1088,7 @@ load_existing_env() {
     key="${key%$'\r'}"
     value="${value%$'\r'}"
     case "$key" in
-      HY2_PORT|HY2_PORT_HOPPING|HY2_HOP_PORTS|VLESS_PORT|ANYTLS_PORT|SS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|ENABLE_ANYTLS|ENABLE_SS|TUIC_PORT|ENABLE_TUIC|TUIC_PASSWORD|REALITY_PORT|ENABLE_REALITY|REALITY_SNI|REALITY_SHORT_ID|WARP_SCOPE|WARP_SPLIT_GEOSITE|WARP_SPLIT_DOMAINS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|ANYTLS_PASSWORD|SS_PASSWORD|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|WARP_MODE|WARP_AUTORECOVER|WARP_PROBE_INTERVAL|USQUE_HTTP2|CF_Token|CF_Account_ID|CF_Zone_ID|DEPLOY_MODE|ENABLE_WS|WS_PORT|WS_PATH|WS_HOST|WS_ADDRESS|CF_TUNNEL_TOKEN|CF_TUNNEL_PROTOCOL|CLOUDFLARED_IMAGE|MEM_LIMIT)
+      HY2_PORT|HY2_PORT_HOPPING|HY2_HOP_PORTS|VLESS_PORT|ANYTLS_PORT|SS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|ENABLE_ANYTLS|ENABLE_SS|TUIC_PORT|ENABLE_TUIC|TUIC_PASSWORD|REALITY_PORT|ENABLE_REALITY|REALITY_SNI|REALITY_SHORT_ID|WARP_SCOPE|WARP_SPLIT_GEOSITE|WARP_SPLIT_DOMAINS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|ANYTLS_PASSWORD|SS_PASSWORD|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|WARP_MODE|WARP_AUTORECOVER|WARP_PROBE_INTERVAL|USQUE_HTTP2|CF_Token|CF_Account_ID|CF_Zone_ID|DEPLOY_MODE|ENABLE_WS|WS_PORT|WS_PATH|WS_HOST|WS_ADDRESS|CF_TUNNEL_TOKEN|CF_TUNNEL_PROTOCOL|CLOUDFLARED_IMAGE|MEM_LIMIT|NETWORK_MODE)
         printf -v "$key" '%s' "$value"
         ;;
     esac
@@ -1458,6 +1461,8 @@ validate_config() {
   validate_true_false "ENABLE_REALITY" "$ENABLE_REALITY"
   validate_true_false "ENABLE_WS" "$ENABLE_WS"
   [[ "$MEM_LIMIT" =~ ^[1-9][0-9]*[mMgG]$ ]] || { err "MEM_LIMIT 格式应为 768m 或 1g，当前值: $MEM_LIMIT"; exit 1; }
+  resolve_network_mode
+  [[ "$NETWORK_MODE" == "bridge" || "$NETWORK_MODE" == "host" ]] || { err "NETWORK_MODE 只能是 bridge 或 host，当前值: $NETWORK_MODE"; exit 1; }
   if [[ "$DEPLOY_MODE" != "direct" && "$DEPLOY_MODE" != "tunnel" ]]; then
     err "DEPLOY_MODE 必须是 direct 或 tunnel，当前值: $DEPLOY_MODE"
     exit 1
@@ -1663,6 +1668,7 @@ services:
       - AUTH_UUID=\${AUTH_UUID:-}
       - VLESS_UUID=\${VLESS_UUID:-}
       - MIXED_PORT=\${MIXED_PORT:-1080}
+      - MIXED_LISTEN=0.0.0.0
       - WARP_LICENSE_KEY=\${WARP_LICENSE_KEY:-}
       - WARP_MODE=\${WARP_MODE:-auto}
       - WARP_SCOPE=\${WARP_SCOPE:-all}
@@ -1693,7 +1699,25 @@ services:
 EOF
 }
 
+# 没指定 NETWORK_MODE 时沿用现有 compose（手改成 network_mode: host 的老部署
+# 重写配置后仍是 host，入口端口不会因此改走映射）；隧道模式固定 bridge，
+# cloudflared 要通过容器名访问。
+resolve_network_mode() {
+  if [[ "$DEPLOY_MODE" == "tunnel" ]]; then
+    NETWORK_MODE="bridge"
+    return 0
+  fi
+  if [[ -z "$NETWORK_MODE" ]]; then
+    if [[ -f "$COMPOSE_FILE" ]] && grep -Eq '^[[:space:]]*network_mode:[[:space:]]*["'"'"']?host' "$COMPOSE_FILE"; then
+      NETWORK_MODE="host"
+    else
+      NETWORK_MODE="bridge"
+    fi
+  fi
+}
+
 write_compose() {
+  resolve_network_mode
   if [[ "$DEPLOY_MODE" == "tunnel" ]]; then
     write_tunnel_compose
     return 0
@@ -1734,6 +1758,17 @@ write_compose() {
   ports_block="${ports_block}
       - \"127.0.0.1:\${MIXED_PORT:-1080}:\${MIXED_PORT:-1080}/tcp\""
 
+  # host 网络：端口映射不生效，入站直接听宿主端口；Mixed 必须只听 127.0.0.1
+  local network_block="    ports:
+${ports_block}" mixed_listen="0.0.0.0"
+  if [[ "$NETWORK_MODE" == "host" ]]; then
+    network_block="    network_mode: host"
+    mixed_listen="127.0.0.1"
+    if [[ "$ENABLE_HY2" == "true" && "$HY2_PORT_HOPPING" == "true" ]]; then
+      log "注意: host 网络下 HY2 端口跳跃的映射不生效，需要自己在宿主机把 $HY2_HOP_PORTS 转发到 $HY2_PORT"
+    fi
+  fi
+
   cat >"$COMPOSE_FILE" <<EOF
 services:
   singbox-warp:
@@ -1741,8 +1776,7 @@ services:
     container_name: singbox-warp
     restart: unless-stopped
     init: true
-    ports:
-${ports_block}
+${network_block}
     volumes:
       - ./data:/var/lib/wgcf
       - ./certs:/etc/sing-box/certs
@@ -1772,6 +1806,7 @@ ${ports_block}
       - ANYTLS_PORT=\${ANYTLS_PORT:-4443}
       - SS_PORT=\${SS_PORT:-48443}
       - MIXED_PORT=\${MIXED_PORT:-1080}
+      - MIXED_LISTEN=${mixed_listen}
       - ENABLE_HY2=\${ENABLE_HY2:-true}
       - ENABLE_VLESS=\${ENABLE_VLESS:-true}
       - ENABLE_ANYTLS=\${ENABLE_ANYTLS:-false}
@@ -1845,6 +1880,7 @@ CF_TUNNEL_TOKEN=$CF_TUNNEL_TOKEN
 CF_TUNNEL_PROTOCOL=$CF_TUNNEL_PROTOCOL
 CLOUDFLARED_IMAGE=$CLOUDFLARED_IMAGE
 MEM_LIMIT=$MEM_LIMIT
+NETWORK_MODE=$NETWORK_MODE
 WARP_SCOPE=$WARP_SCOPE
 WARP_SPLIT_GEOSITE=$WARP_SPLIT_GEOSITE
 WARP_SPLIT_DOMAINS=$WARP_SPLIT_DOMAINS

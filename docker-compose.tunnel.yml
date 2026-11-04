@@ -62,6 +62,9 @@ services:
       - AUTH_UUID=${AUTH_UUID:-}
       - VLESS_UUID=${VLESS_UUID:-}
       - MIXED_PORT=${MIXED_PORT:-1080}
+      # Mixed 代理无认证。留空自动判断：bridge 听 0.0.0.0（端口只映射到宿主 127.0.0.1），
+      # network_mode: host 时听 127.0.0.1，避免变成公网开放代理
+      - MIXED_LISTEN=${MIXED_LISTEN:-}
       - WARP_LICENSE_KEY=${WARP_LICENSE_KEY:-}
       - WARP_MODE=${WARP_MODE:-auto}
       - WARP_SCOPE=${WARP_SCOPE:-all}

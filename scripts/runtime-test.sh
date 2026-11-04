@@ -178,11 +178,17 @@ done
 if curl -fsS -o /dev/null --max-time 5 -x socks5h://127.0.0.1:31002 http://127.0.0.1:21080/ 2>/dev/null; then
   fail "private address was reachable through the node"
 fi
-echo "ok   private address rejected"
+# A domain that resolves to a private address must be rejected too.
+if curl -fsS -o /dev/null --max-time 5 -x socks5h://127.0.0.1:31002 http://localhost:21080/ 2>/dev/null; then
+  fail "private address was reachable through the node via a domain name"
+fi
+echo "ok   private address rejected (IP and domain)"
 
 # Host-local mixed proxy.
 curl -fsS -o /dev/null --max-time 15 -x socks5h://127.0.0.1:21080 "$TEST_URL" || fail "mixed proxy failed"
 echo "ok   mixed proxy"
+jq -e '.inbounds[] | select(.tag == "mixed-in") | .listen == "0.0.0.0"' <<<"$config" >/dev/null ||
+  fail "bridge network: mixed-in should listen on 0.0.0.0 (published on host 127.0.0.1 only)"
 
 if docker logs "$NAME" 2>&1 | grep -q '\[warp\] using'; then
   echo "ok   WARP egress: $(docker logs "$NAME" 2>&1 | grep '\[warp\] using' | tail -n1)"
@@ -222,5 +228,32 @@ done
 code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:28080/ || true)"
 [ "$code" != "101" ] && [ "$code" != "200" ] || fail "tunnel mode: root path answered with $code"
 echo "ok   tunnel mode (ws only, no certificate)"
+
+# Host network: port publishing does not apply, so the unauthenticated mixed
+# proxy must bind loopback only.
+docker rm -f "$NAME" >/dev/null 2>&1 || true
+docker run -d --name "$NAME" --init --network host \
+  --security-opt no-new-privileges:true \
+  -v "$work/data:/var/lib/wgcf" \
+  -e AUTO_TLS=false \
+  -e ENABLE_HY2=false -e ENABLE_VLESS=false \
+  -e ENABLE_WS=true -e WS_PORT=28081 -e WS_HOST=hostnet.example.com \
+  -e MIXED_PORT=21081 -e WARP_MODE=direct \
+  "$IMAGE" >/dev/null
+for _ in $(seq 1 60); do
+  docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true || fail "host network: container exited during startup"
+  docker logs "$NAME" 2>&1 | grep -q 'sing-box started' && break
+  sleep 2
+done
+docker logs "$NAME" 2>&1 | grep -q 'sing-box started' || fail "host network: sing-box did not start"
+config="$(docker exec "$NAME" cat /etc/sing-box/config.json)"
+jq -e '.inbounds[] | select(.tag == "mixed-in") | .listen == "127.0.0.1"' <<<"$config" >/dev/null ||
+  fail "host network: mixed-in must listen on 127.0.0.1"
+curl -fsS -o /dev/null --max-time 15 -x socks5h://127.0.0.1:21081 "$TEST_URL" || fail "host network: mixed proxy failed on loopback"
+host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+if [ -n "$host_ip" ] && curl -fsS -o /dev/null --max-time 5 -x "socks5h://${host_ip}:21081" "$TEST_URL" 2>/dev/null; then
+  fail "host network: mixed proxy reachable on $host_ip"
+fi
+echo "ok   host network (mixed on loopback only)"
 
 echo "runtime test passed"
