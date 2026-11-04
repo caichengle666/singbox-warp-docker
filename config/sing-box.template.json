@@ -140,7 +140,7 @@
     {
       "type": "mixed",
       "tag": "mixed-in",
-      "listen": "0.0.0.0",
+      "listen": "__MIXED_LISTEN__",
       "listen_port": __MIXED_PORT__
     }
   ],

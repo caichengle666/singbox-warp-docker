@@ -34,6 +34,12 @@ WARP_SPLIT_GEOSITE_ENV="${WARP_SPLIT_GEOSITE-openai,anthropic,google-gemini,netf
 WARP_SPLIT_DOMAINS_ENV="${WARP_SPLIT_DOMAINS:-}"
 RULESET_BASE_URL_ENV="${RULESET_BASE_URL:-https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set}"
 MIXED_PORT_ENV="${MIXED_PORT:-1080}"
+# The mixed proxy has no auth. Bridge mode: listen on all container interfaces, the
+# compose file publishes it on host 127.0.0.1 only. Host network (docker0 is visible
+# here): publishing is ignored, so listen on loopback or it is an open proxy.
+if [ -n "${MIXED_LISTEN:-}" ]; then MIXED_LISTEN_ENV="$MIXED_LISTEN"
+elif [ -e /sys/class/net/docker0 ]; then MIXED_LISTEN_ENV="127.0.0.1"
+else MIXED_LISTEN_ENV="0.0.0.0"; fi
 AUTO_TLS_ENV="${AUTO_TLS:-false}"
 TLS_DOMAIN_ENV="${TLS_DOMAIN:-}"
 ACME_EMAIL_ENV="${ACME_EMAIL:-}"
@@ -977,6 +983,7 @@ sed -i \
   -e "s|__VLESS_TAG__|$VLESS_TAG_ENV|g" \
   -e "s|__WARP_PEER_PORT__|$WARP_PEER_PORT|g" \
   -e "s|__MIXED_PORT__|$MIXED_PORT_ENV|g" \
+  -e "s|__MIXED_LISTEN__|$MIXED_LISTEN_ENV|g" \
   "$SB_CONFIG"
 
 tmp_config="$(mktemp)"

@@ -147,7 +147,7 @@ Common uses:
 
 **Port change**: set `MIXED_PORT=xxxx` in `.env`; both container and host-local ports are updated together.
 
-> ⚠️ **Security note**: port `1080` has no authentication and is mapped to `127.0.0.1` by default. Do not change it to `0.0.0.0` for public or LAN exposure.
+> ⚠️ **Security note**: port `1080` has no authentication and is mapped to `127.0.0.1` by default. Do not change it to `0.0.0.0` for public or LAN exposure. With `network_mode: host` the port mapping is ignored, so the container listens on `127.0.0.1` only (override with `MIXED_LISTEN`).
 
 ## `.env` Examples
 
