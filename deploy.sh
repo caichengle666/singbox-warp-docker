@@ -95,6 +95,9 @@ refresh_paths() {
   BACKUP_DIR="$APP_DIR/backups"
 }
 
+# 提权时传给 root 进程的环境变量（sudo-rs 不支持 -E）
+SUDO_PASSTHROUGH_VARS="FORCE_STDIN ACME_EMAIL ACTIVE_INSTANCE_FILE ANYTLS_PASSWORD ANYTLS_PORT APP_DIR AUTH_UUID AUTO_DOMAIN AUTO_TLS BASE_DOMAIN CF_Account_ID CF_TUNNEL_PROTOCOL CF_TUNNEL_TOKEN CF_Token CF_Zone_ID CITY_LOOKUP_RETRIES CITY_LOOKUP_RETRY_DELAY CITY_LOOKUP_TIMEOUT CLOUDFLARED_IMAGE DEPLOY_MODE DEPLOY_SCRIPT_URL ENABLE_ANYTLS ENABLE_HY2 ENABLE_REALITY ENABLE_SS ENABLE_TUIC ENABLE_VLESS ENABLE_WS HY2_HOP_PORTS HY2_PASSWORD HY2_PORT HY2_PORT_HOPPING IMAGE MEM_LIMIT MIXED_PORT NETWORK_MODE NODE_NAME REALITY_PORT REALITY_SHORT_ID REALITY_SNI SS_PASSWORD SS_PORT TLS_CERT_PATH TLS_DOMAIN TLS_ISSUE_RETRIES TLS_KEY_PATH TLS_RENEW_INTERVAL TUIC_PASSWORD TUIC_PORT USQUE_HTTP2 VLESS_PORT VLESS_UUID WARP_AUTORECOVER WARP_LICENSE_KEY WARP_MODE WARP_PROBE_INTERVAL WARP_SCOPE WARP_SPLIT_DOMAINS WARP_SPLIT_GEOSITE WS_ADDRESS WS_HOST WS_PATH WS_PORT"
+
 log() { printf '[deploy] %s\n' "$*"; }
 err() { printf '[deploy][error] %s\n' "$*" >&2; }
 
@@ -204,12 +207,22 @@ ensure_root() {
     exit 1
   fi
   log "检测到当前用户不是 root，正在通过 sudo 请求权限"
-  if ! sudo -n -E true && ! sudo -v; then
+  if ! sudo -n true 2>/dev/null && ! sudo -v; then
     err "sudo 授权失败"
     exit 1
   fi
+  # 不用 sudo -E：Ubuntu 25.10+ 默认的 sudo-rs 会忽略它（只打一行警告），
+  # 用户在命令前设置的变量会全部丢失。改为把本脚本认识的、调用时确实导出过的
+  # 变量显式交给 env。
+  local -a pass_env=()
+  local name
+  while IFS= read -r name; do
+    case " $SUDO_PASSTHROUGH_VARS " in
+      *" $name "*) pass_env+=("$name=${!name}") ;;
+    esac
+  done < <(compgen -e)
   # shellcheck disable=SC2093
-  exec sudo -E bash "$source_file" "$@"
+  exec sudo env "${pass_env[@]}" bash "$source_file" "$@"
 }
 
 load_active_app_dir() {
