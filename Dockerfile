@@ -23,22 +23,22 @@ RUN set -eux; \
       *) echo "Unsupported arch: $arch"; exit 1 ;; \
     esac; \
     if [ -z "$SINGBOX_VERSION" ]; then \
-      SINGBOX_VERSION="$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -er '.tag_name' | sed 's/^v//')"; \
+      SINGBOX_VERSION="$(curl -fsSL --retry 15 --retry-all-errors --retry-delay 8 https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -er '.tag_name' | sed 's/^v//')"; \
     fi; \
     if [ -z "$WGCF_VERSION" ]; then \
-      WGCF_VERSION="$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -er '.tag_name' | sed 's/^v//')"; \
+      WGCF_VERSION="$(curl -fsSL --retry 15 --retry-all-errors --retry-delay 8 https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -er '.tag_name' | sed 's/^v//')"; \
     fi; \
     for version in "$SINGBOX_VERSION" "$WGCF_VERSION"; do \
       printf '%s\n' "$version" | grep -Eq '^[0-9]+([.][0-9]+)+$' || { echo "Invalid release version: $version"; exit 1; }; \
     done; \
     echo "Building with sing-box v${SINGBOX_VERSION}, wgcf v${WGCF_VERSION}"; \
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${sb_arch}.tar.gz" -o /tmp/sb.tgz; \
+    curl -fsSL --retry 15 --retry-all-errors --retry-delay 8 "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${sb_arch}.tar.gz" -o /tmp/sb.tgz; \
     tar -xzf /tmp/sb.tgz -C /tmp; \
     cp "/tmp/sing-box-${SINGBOX_VERSION}-linux-${sb_arch}/sing-box" /usr/local/bin/sing-box; \
     chmod +x /usr/local/bin/sing-box; \
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_linux_${wgcf_arch}" -o /usr/local/bin/wgcf; \
+    curl -fsSL --retry 15 --retry-all-errors --retry-delay 8 "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_linux_${wgcf_arch}" -o /usr/local/bin/wgcf; \
     chmod +x /usr/local/bin/wgcf; \
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://get.acme.sh | sh -s email=none@example.com --force; \
+    curl -fsSL --retry 15 --retry-all-errors --retry-delay 8 https://get.acme.sh | sh -s email=none@example.com --force; \
     rm -rf /tmp/*
 
 WORKDIR /app
