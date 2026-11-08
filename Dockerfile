@@ -54,4 +54,13 @@ VOLUME ["/var/lib/wgcf", "/etc/sing-box/certs", "/var/lib/acme"]
 
 EXPOSE 32443/tcp 32443/udp 38443/tcp 4443/tcp 48443/tcp 36443/udp 443/tcp 1080/tcp
 
+# Default for "docker run" and compose files without their own healthcheck: the
+# sing-box process is alive and traffic actually leaves through the mixed inbound,
+# whichever egress (WARP or the direct fallback) is current. Do not probe 18080
+# (warp-probe is pinned to the WireGuard outbound) or 18081 (usque only).
+HEALTHCHECK --interval=30s --timeout=20s --start-period=60s --retries=3 \
+  CMD test -s /run/sing-box.pid && kill -0 "$(cat /run/sing-box.pid)" \
+    && { curl -fsS -o /dev/null --max-time 8 --proxy "socks5h://127.0.0.1:${MIXED_PORT:-1080}" https://www.cloudflare.com/cdn-cgi/trace \
+      || curl -fsS -o /dev/null --max-time 8 --proxy "socks5h://127.0.0.1:${MIXED_PORT:-1080}" https://www.gstatic.com/generate_204; }
+
 ENTRYPOINT ["/entrypoint.sh"]

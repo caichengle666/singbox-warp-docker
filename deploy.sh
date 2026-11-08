@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.5.4"
+SCRIPT_VERSION="2.5.5"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
 DEPLOY_SCRIPT_URL="${DEPLOY_SCRIPT_URL:-https://raw.githubusercontent.com/caichengle666/singbox-warp-docker/main/deploy.sh}"
 COMPOSE_FILE_NAME="docker-compose.yml"
+# deploy.sh 生成的 compose 带这个版本标记。更新镜像时标记缺失或更旧，就按 .env 重写，
+# 让老部署/手写 compose 补上日志上限、正确的健康检查等（原文件先备份）。
+COMPOSE_SCHEMA=2
 ENV_FILE_NAME=".env"
 STATE_DIR_NAME=".deploy-state"
 
@@ -42,6 +45,8 @@ CF_TUNNEL_TOKEN="${CF_TUNNEL_TOKEN:-}"
 CF_TUNNEL_PROTOCOL="${CF_TUNNEL_PROTOCOL:-auto}"
 CLOUDFLARED_IMAGE="${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}"
 MEM_LIMIT="${MEM_LIMIT:-768m}"
+# sing-box 日志级别；info 会给每个入站连接记一行，被扫描时日志暴涨
+LOG_LEVEL="${LOG_LEVEL:-warn}"
 # bridge（默认，端口映射）或 host（容器直接用宿主网络）；留空时沿用现有 compose 的模式
 NETWORK_MODE="${NETWORK_MODE:-}"
 TUIC_PASSWORD="${TUIC_PASSWORD:-}"
@@ -96,7 +101,7 @@ refresh_paths() {
 }
 
 # 提权时传给 root 进程的环境变量（sudo-rs 不支持 -E）
-SUDO_PASSTHROUGH_VARS="FORCE_STDIN ACME_EMAIL ACTIVE_INSTANCE_FILE ANYTLS_PASSWORD ANYTLS_PORT APP_DIR AUTH_UUID AUTO_DOMAIN AUTO_TLS BASE_DOMAIN CF_Account_ID CF_TUNNEL_PROTOCOL CF_TUNNEL_TOKEN CF_Token CF_Zone_ID CITY_LOOKUP_RETRIES CITY_LOOKUP_RETRY_DELAY CITY_LOOKUP_TIMEOUT CLOUDFLARED_IMAGE DEPLOY_MODE DEPLOY_SCRIPT_URL ENABLE_ANYTLS ENABLE_HY2 ENABLE_REALITY ENABLE_SS ENABLE_TUIC ENABLE_VLESS ENABLE_WS HY2_HOP_PORTS HY2_PASSWORD HY2_PORT HY2_PORT_HOPPING IMAGE MEM_LIMIT MIXED_PORT NETWORK_MODE NODE_NAME REALITY_PORT REALITY_SHORT_ID REALITY_SNI SS_PASSWORD SS_PORT TLS_CERT_PATH TLS_DOMAIN TLS_ISSUE_RETRIES TLS_KEY_PATH TLS_RENEW_INTERVAL TUIC_PASSWORD TUIC_PORT USQUE_HTTP2 VLESS_PORT VLESS_UUID WARP_AUTORECOVER WARP_LICENSE_KEY WARP_MODE WARP_PROBE_INTERVAL WARP_SCOPE WARP_SPLIT_DOMAINS WARP_SPLIT_GEOSITE WS_ADDRESS WS_HOST WS_PATH WS_PORT"
+SUDO_PASSTHROUGH_VARS="FORCE_STDIN ACME_EMAIL ACTIVE_INSTANCE_FILE ANYTLS_PASSWORD ANYTLS_PORT APP_DIR AUTH_UUID AUTO_DOMAIN AUTO_TLS BASE_DOMAIN CF_Account_ID CF_TUNNEL_PROTOCOL CF_TUNNEL_TOKEN CF_Token CF_Zone_ID CITY_LOOKUP_RETRIES CITY_LOOKUP_RETRY_DELAY CITY_LOOKUP_TIMEOUT CLOUDFLARED_IMAGE DEPLOY_MODE DEPLOY_SCRIPT_URL ENABLE_ANYTLS ENABLE_HY2 ENABLE_REALITY ENABLE_SS ENABLE_TUIC ENABLE_VLESS ENABLE_WS HY2_HOP_PORTS HY2_PASSWORD HY2_PORT HY2_PORT_HOPPING IMAGE LOG_LEVEL MEM_LIMIT MIXED_PORT NETWORK_MODE NODE_NAME REALITY_PORT REALITY_SHORT_ID REALITY_SNI SS_PASSWORD SS_PORT TLS_CERT_PATH TLS_DOMAIN TLS_ISSUE_RETRIES TLS_KEY_PATH TLS_RENEW_INTERVAL TUIC_PASSWORD TUIC_PORT USQUE_HTTP2 VLESS_PORT VLESS_UUID WARP_AUTORECOVER WARP_LICENSE_KEY WARP_MODE WARP_PROBE_INTERVAL WARP_SCOPE WARP_SPLIT_DOMAINS WARP_SPLIT_GEOSITE WS_ADDRESS WS_HOST WS_PATH WS_PORT"
 
 log() { printf '[deploy] %s\n' "$*"; }
 err() { printf '[deploy][error] %s\n' "$*" >&2; }
@@ -1101,7 +1106,7 @@ load_existing_env() {
     key="${key%$'\r'}"
     value="${value%$'\r'}"
     case "$key" in
-      HY2_PORT|HY2_PORT_HOPPING|HY2_HOP_PORTS|VLESS_PORT|ANYTLS_PORT|SS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|ENABLE_ANYTLS|ENABLE_SS|TUIC_PORT|ENABLE_TUIC|TUIC_PASSWORD|REALITY_PORT|ENABLE_REALITY|REALITY_SNI|REALITY_SHORT_ID|WARP_SCOPE|WARP_SPLIT_GEOSITE|WARP_SPLIT_DOMAINS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|ANYTLS_PASSWORD|SS_PASSWORD|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|WARP_MODE|WARP_AUTORECOVER|WARP_PROBE_INTERVAL|USQUE_HTTP2|CF_Token|CF_Account_ID|CF_Zone_ID|DEPLOY_MODE|ENABLE_WS|WS_PORT|WS_PATH|WS_HOST|WS_ADDRESS|CF_TUNNEL_TOKEN|CF_TUNNEL_PROTOCOL|CLOUDFLARED_IMAGE|MEM_LIMIT|NETWORK_MODE)
+      HY2_PORT|HY2_PORT_HOPPING|HY2_HOP_PORTS|VLESS_PORT|ANYTLS_PORT|SS_PORT|MIXED_PORT|ENABLE_HY2|ENABLE_VLESS|ENABLE_ANYTLS|ENABLE_SS|TUIC_PORT|ENABLE_TUIC|TUIC_PASSWORD|REALITY_PORT|ENABLE_REALITY|REALITY_SNI|REALITY_SHORT_ID|WARP_SCOPE|WARP_SPLIT_GEOSITE|WARP_SPLIT_DOMAINS|AUTO_DOMAIN|BASE_DOMAIN|NODE_NAME|AUTH_UUID|HY2_PASSWORD|VLESS_UUID|ANYTLS_PASSWORD|SS_PASSWORD|AUTO_TLS|TLS_DOMAIN|TLS_CERT_PATH|TLS_KEY_PATH|ACME_EMAIL|TLS_ISSUE_RETRIES|TLS_RENEW_INTERVAL|WARP_LICENSE_KEY|WARP_MODE|WARP_AUTORECOVER|WARP_PROBE_INTERVAL|USQUE_HTTP2|CF_Token|CF_Account_ID|CF_Zone_ID|DEPLOY_MODE|ENABLE_WS|WS_PORT|WS_PATH|WS_HOST|WS_ADDRESS|CF_TUNNEL_TOKEN|CF_TUNNEL_PROTOCOL|CLOUDFLARED_IMAGE|MEM_LIMIT|NETWORK_MODE|LOG_LEVEL)
         printf -v "$key" '%s' "$value"
         ;;
     esac
@@ -1474,6 +1479,7 @@ validate_config() {
   validate_true_false "ENABLE_REALITY" "$ENABLE_REALITY"
   validate_true_false "ENABLE_WS" "$ENABLE_WS"
   [[ "$MEM_LIMIT" =~ ^[1-9][0-9]*[mMgG]$ ]] || { err "MEM_LIMIT 格式应为 768m 或 1g，当前值: $MEM_LIMIT"; exit 1; }
+  [[ "$LOG_LEVEL" =~ ^(trace|debug|info|warn|error|fatal|panic)$ ]] || { err "LOG_LEVEL 只能是 trace/debug/info/warn/error/fatal/panic，当前值: $LOG_LEVEL"; exit 1; }
   resolve_network_mode
   [[ "$NETWORK_MODE" == "bridge" || "$NETWORK_MODE" == "host" ]] || { err "NETWORK_MODE 只能是 bridge 或 host，当前值: $NETWORK_MODE"; exit 1; }
   if [[ "$DEPLOY_MODE" != "direct" && "$DEPLOY_MODE" != "tunnel" ]]; then
@@ -1637,6 +1643,7 @@ validate_config() {
 
 write_tunnel_compose() {
   cat >"$COMPOSE_FILE" <<EOF
+# singbox-warp compose schema: ${COMPOSE_SCHEMA} (generated by deploy.sh; 手改会在 schema 升级时被重写，原文件留备份)
 services:
   singbox-warp:
     image: ${IMAGE}
@@ -1681,6 +1688,7 @@ services:
       - AUTH_UUID=\${AUTH_UUID:-}
       - VLESS_UUID=\${VLESS_UUID:-}
       - MIXED_PORT=\${MIXED_PORT:-1080}
+      - LOG_LEVEL=\${LOG_LEVEL:-warn}
       - MIXED_LISTEN=0.0.0.0
       - WARP_LICENSE_KEY=\${WARP_LICENSE_KEY:-}
       - WARP_MODE=\${WARP_MODE:-auto}
@@ -1783,6 +1791,7 @@ ${ports_block}" mixed_listen="0.0.0.0"
   fi
 
   cat >"$COMPOSE_FILE" <<EOF
+# singbox-warp compose schema: ${COMPOSE_SCHEMA} (generated by deploy.sh; 手改会在 schema 升级时被重写，原文件留备份)
 services:
   singbox-warp:
     image: ${IMAGE}
@@ -1819,6 +1828,7 @@ ${network_block}
       - ANYTLS_PORT=\${ANYTLS_PORT:-4443}
       - SS_PORT=\${SS_PORT:-48443}
       - MIXED_PORT=\${MIXED_PORT:-1080}
+      - LOG_LEVEL=\${LOG_LEVEL:-warn}
       - MIXED_LISTEN=${mixed_listen}
       - ENABLE_HY2=\${ENABLE_HY2:-true}
       - ENABLE_VLESS=\${ENABLE_VLESS:-true}
@@ -1894,6 +1904,7 @@ CF_TUNNEL_PROTOCOL=$CF_TUNNEL_PROTOCOL
 CLOUDFLARED_IMAGE=$CLOUDFLARED_IMAGE
 MEM_LIMIT=$MEM_LIMIT
 NETWORK_MODE=$NETWORK_MODE
+LOG_LEVEL=$LOG_LEVEL
 WARP_SCOPE=$WARP_SCOPE
 WARP_SPLIT_GEOSITE=$WARP_SPLIT_GEOSITE
 WARP_SPLIT_DOMAINS=$WARP_SPLIT_DOMAINS
@@ -2420,6 +2431,75 @@ cmd_bootstrap() {
   fi
 }
 
+# compose 是否需要按 .env 重写：没有 schema 标记（老版本生成或手写）、或标记比当前旧。
+# 典型问题：漏了 logging（json-file 默认不限大小）、健康检查探 18080（只测 WireGuard）。
+compose_schema_outdated() {
+  local current
+  current="$(sed -n -E 's/^# singbox-warp compose schema: ([0-9]+).*/\1/p' "$COMPOSE_FILE" | head -n1)"
+  [[ -z "$current" ]] && return 0
+  (( current < COMPOSE_SCHEMA ))
+}
+
+# 自动重写前确认新 compose 与旧的等价：旧文件里每个环境变量取值不变、网络模式不变、
+# 端口映射（Mixed 口除外，新版固定只发布到 127.0.0.1）不变、卷不少、服务不少。
+# 不等价就输出原因（非空），由调用方放弃重写，避免悄悄丢掉手改。
+compose_rewrite_mismatch() {
+  local old_file="$1" new_file="$2" old_json new_json
+  command -v jq >/dev/null 2>&1 || { printf '宿主机没有 jq，无法比对'; return 0; }
+  old_json="$(docker compose --project-directory "$APP_DIR" -f "$old_file" config --format json 2>/dev/null)" || { printf '旧 compose 解析失败'; return 0; }
+  new_json="$(docker compose --project-directory "$APP_DIR" -f "$new_file" config --format json 2>/dev/null)" || { printf '新 compose 解析失败'; return 0; }
+  jq -rn --argjson a "$old_json" --argjson b "$new_json" --arg mixed "${MIXED_PORT:-1080}" '
+    def svc($x; $n): ($x.services[$n] // {});
+    def ports($s): [ $s.ports[]? | select((.target|tostring) != $mixed)
+                     | "\(.host_ip // "")|\(.published // "")|\(.target)|\(.protocol // "tcp")" ] | sort;
+    def vols($s): [ $s.volumes[]? | "\(.source)|\(.target)" ];
+    def envmap($s): ($s.environment // {}) | del(.LOG_LEVEL, .MIXED_LISTEN);
+    [
+      ( ($a.services|keys) - ($b.services|keys) | select(length>0) | "服务 \(join(","))" ),
+      ( ($a.services|keys)[] as $n
+        | svc($a;$n) as $o | svc($b;$n) as $w
+        | ( envmap($o) | to_entries[] | select(envmap($w)[.key] != .value) | "\($n) 环境变量 \(.key)" ),
+          ( select(($o.network_mode // "bridge") != ($w.network_mode // "bridge")) | "\($n) 网络模式" ),
+          ( select(ports($o) != ports($w)) | "\($n) 端口映射" ),
+          ( select((vols($o) - vols($w)) | length > 0) | "\($n) 挂载卷" )
+      )
+    ] | unique | join("、")'
+}
+
+# 更新镜像前把过时的 compose 换成当前版本：原文件带时间戳备份，网络模式（host/bridge）
+# 与镜像沿用原 compose，其余取自 .env。返回 0 表示重写过（失败时由调用方恢复）。
+COMPOSE_REFRESH_BACKUP=""
+refresh_outdated_compose() {
+  COMPOSE_REFRESH_BACKUP=""
+  compose_schema_outdated || return 1
+  mkdir -p "$STATE_DIR"
+  COMPOSE_REFRESH_BACKUP="$STATE_DIR/${COMPOSE_FILE_NAME}.bak.$(date +%Y%m%d-%H%M%S)"
+  cp -f "$COMPOSE_FILE" "$COMPOSE_REFRESH_BACKUP"
+  IMAGE="$(grep -E '^[[:space:]]*image:[[:space:]]*' "$COMPOSE_FILE" | head -n1 | sed -E 's/^[[:space:]]*image:[[:space:]]*//')"
+  IMAGE="${IMAGE:-$IMAGE_DEFAULT}"
+  [[ "$LOG_LEVEL" =~ ^(trace|debug|info|warn|error|fatal|panic)$ ]] || LOG_LEVEL="warn"
+  write_compose
+  local why=""
+  why="$(compose_rewrite_mismatch "$COMPOSE_REFRESH_BACKUP" "$COMPOSE_FILE")" || true
+  if [[ -n "$why" ]]; then
+    cp -f "$COMPOSE_REFRESH_BACKUP" "$COMPOSE_FILE"
+    rm -f "$COMPOSE_REFRESH_BACKUP"
+    COMPOSE_REFRESH_BACKUP=""
+    err "compose 是旧版本（可能缺日志上限、健康检查探错端口），但含有 .env 之外的改动（${why}），未自动升级"
+    err "请把这些改动写进 .env 后运行「修改配置」重写 compose；本次只更新镜像"
+    return 1
+  fi
+  log "compose 已按当前版本重写（补日志上限 10m×3、经 Mixed 口的健康检查、日志级别 ${LOG_LEVEL}，网络模式 ${NETWORK_MODE}）"
+  log "原 compose 备份在 $COMPOSE_REFRESH_BACKUP；里面的手工改动需要的话请写进 .env 后用「修改配置」应用"
+  return 0
+}
+
+restore_refreshed_compose() {
+  [[ -n "$COMPOSE_REFRESH_BACKUP" && -f "$COMPOSE_REFRESH_BACKUP" ]] || return 0
+  cp -f "$COMPOSE_REFRESH_BACKUP" "$COMPOSE_FILE"
+  log "已恢复原 compose"
+}
+
 cmd_update_image() {
   need_cmd docker
   [[ -f "$COMPOSE_FILE" && -f "$ENV_FILE" ]] || {
@@ -2431,6 +2511,7 @@ cmd_update_image() {
   fi
   load_existing_env
   record_current_image_for_rollback
+  refresh_outdated_compose || true
   local tunnel_was_up=false
   if [[ "$DEPLOY_MODE" == "tunnel" ]]; then
     record_current_cloudflared_for_rollback
@@ -2446,11 +2527,13 @@ cmd_update_image() {
     docker compose up -d
   ); then
     err "镜像更新失败，正在恢复旧镜像"
+    restore_refreshed_compose
     apply_rollback_image "$(cat "$ROLLBACK_FILE")"
     return 1
   fi
   if ! wait_healthy; then
     err "新镜像健康检查失败，正在恢复旧镜像"
+    restore_refreshed_compose
     apply_rollback_image "$(cat "$ROLLBACK_FILE")"
     return 1
   fi
@@ -2459,6 +2542,7 @@ cmd_update_image() {
     if [[ "$TUNNEL_FAILED" == "true" ]]; then
       if [[ "$tunnel_was_up" == "true" ]]; then
         err "更新前隧道正常、更新后断开，正在恢复旧镜像（含 cloudflared）"
+        restore_refreshed_compose
         apply_rollback_image "$(cat "$ROLLBACK_FILE")" || return 1
         check_tunnel_connected
         if [[ "$TUNNEL_FAILED" == "true" ]]; then
@@ -2472,7 +2556,11 @@ cmd_update_image() {
       return 1
     fi
   fi
-  log "镜像更新完成，现有配置未改变"
+  if [[ -n "$COMPOSE_REFRESH_BACKUP" ]]; then
+    log "镜像更新完成，compose 已升级到当前版本（.env 未改动）"
+  else
+    log "镜像更新完成，现有配置未改变"
+  fi
 }
 
 cmd_edit_config() {
@@ -2540,6 +2628,9 @@ cmd_diagnose() {
   else
     diag_fail "Compose 配置无效"
   fi
+  if [[ -f "$COMPOSE_FILE" ]] && compose_schema_outdated; then
+    diag_warn "Compose 是旧版本或手写的（可能缺日志上限、健康检查探错端口）；「更新镜像」会在不丢改动时自动升级，否则请用「修改配置」重写"
+  fi
 
   if docker inspect singbox-warp >/dev/null 2>&1; then
     local running health
@@ -2547,6 +2638,14 @@ cmd_diagnose() {
     health="$(docker inspect singbox-warp --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}')"
     if [[ "$running" == "true" ]]; then diag_ok "容器正在运行"; else diag_fail "容器未运行"; fi
     if [[ "$health" == "healthy" ]]; then diag_ok "容器健康检查通过"; else diag_fail "容器健康状态: $health"; fi
+    local log_driver log_max log_path log_size
+    log_driver="$(docker inspect singbox-warp --format '{{.HostConfig.LogConfig.Type}}' 2>/dev/null || true)"
+    log_max="$(docker inspect singbox-warp --format '{{index .HostConfig.LogConfig.Config "max-size"}}' 2>/dev/null || true)"
+    if [[ "$log_driver" == "json-file" && ( -z "$log_max" || "$log_max" == "<no value>" ) ]]; then
+      log_path="$(docker inspect singbox-warp --format '{{.LogPath}}' 2>/dev/null || true)"
+      log_size="$(du -h "$log_path" 2>/dev/null | cut -f1 || true)"
+      diag_warn "容器日志没有大小上限（当前 ${log_size:-未知}）；重建容器后 compose 里的 10m×3 才生效"
+    fi
   else
     diag_fail "未找到 singbox-warp 容器"
   fi

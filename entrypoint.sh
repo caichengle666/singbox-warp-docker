@@ -56,6 +56,13 @@ detect_mixed_listen() {
 }
 if [ -n "${MIXED_LISTEN:-}" ]; then MIXED_LISTEN_ENV="$MIXED_LISTEN"
 else MIXED_LISTEN_ENV="$(detect_mixed_listen)"; fi
+# info logs one line per inbound connection; a scanned port fills the disk with it
+LOG_LEVEL_ENV="${LOG_LEVEL:-warn}"
+case "$LOG_LEVEL_ENV" in
+  trace|debug|info|warn|error|fatal|panic) ;;
+  *) echo "[config] LOG_LEVEL must be one of trace/debug/info/warn/error/fatal/panic, got: $LOG_LEVEL_ENV; using warn"
+     LOG_LEVEL_ENV="warn" ;;
+esac
 AUTO_TLS_ENV="${AUTO_TLS:-false}"
 TLS_DOMAIN_ENV="${TLS_DOMAIN:-}"
 ACME_EMAIL_ENV="${ACME_EMAIL:-}"
@@ -481,6 +488,18 @@ start_singbox() {
   sing-box run -c "$SB_CONFIG" &
   SINGBOX_PID="$!"
   printf '%s\n' "$SINGBOX_PID" > "$SINGBOX_PID_FILE"
+  # sing-box prints its own "sing-box started" only at info level; at the default
+  # warn level say it ourselves once the mixed inbound accepts connections.
+  local i
+  for i in $(seq 1 30); do
+    kill -0 "$SINGBOX_PID" 2>/dev/null || return 0
+    if (exec 3<>"/dev/tcp/127.0.0.1/${MIXED_PORT_ENV}") 2>/dev/null; then
+      echo "[sing-box] sing-box started (pid ${SINGBOX_PID}, log level ${LOG_LEVEL_ENV})"
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "[sing-box] mixed inbound 127.0.0.1:${MIXED_PORT_ENV} not accepting connections after 15s"
 }
 
 set_route_outbound() {
@@ -1039,6 +1058,7 @@ sed -i \
   -e "s|__WARP_PEER_PORT__|$WARP_PEER_PORT|g" \
   -e "s|__MIXED_PORT__|$MIXED_PORT_ENV|g" \
   -e "s|__MIXED_LISTEN__|$MIXED_LISTEN_ENV|g" \
+  -e "s|__LOG_LEVEL__|$LOG_LEVEL_ENV|g" \
   "$SB_CONFIG"
 
 tmp_config="$(mktemp)"

@@ -325,7 +325,7 @@ What this interactive script does:
 
 ## Runtime Safety
 
-- Basic resource limits are set in `docker-compose.yml`: `mem_limit` defaults to 768m (override with `MEM_LIMIT` in `.env`, e.g. `1g`), `pids_limit=256`
+- Basic resource limits are set in `docker-compose.yml`: `mem_limit` defaults to 768m (override with `MEM_LIMIT` in `.env`, e.g. `1g`), `pids_limit=256`; container logs rotate at 10m×3 and the sing-box log level defaults to `warn` (`LOG_LEVEL` in `.env`; `info` logs one line per connection)
 - Healthcheck is enabled for the `sing-box` main process
 - `.env` is ignored by git
 - The main service is `sing-box`; certificate renewal is handled by a lightweight shell loop with signal forwarding and graceful shutdown

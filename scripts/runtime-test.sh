@@ -190,6 +190,24 @@ echo "ok   mixed proxy"
 jq -e '.inbounds[] | select(.tag == "mixed-in") | .listen == "0.0.0.0"' <<<"$config" >/dev/null ||
   fail "bridge network: mixed-in should listen on 0.0.0.0 (published on host 127.0.0.1 only)"
 
+# Default log level is warn: proxied connections must not log a line each
+# (a scanned port once filled a disk with "inbound connection" lines).
+jq -e '.log.level == "warn"' <<<"$config" >/dev/null || fail "default log level should be warn"
+if docker logs "$NAME" 2>&1 | grep -q 'inbound connection'; then
+  fail "per-connection INFO lines are logged at the default log level"
+fi
+echo "ok   default log level warn, no per-connection lines"
+
+# The image's own HEALTHCHECK (used by docker run and compose files without
+# one) probes egress through the mixed inbound and must turn healthy.
+for _ in $(seq 1 45); do
+  [ "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$NAME")" = healthy ] && break
+  sleep 2
+done
+health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$NAME")"
+[ "$health" = healthy ] || fail "image HEALTHCHECK did not report healthy (status: $health)"
+echo "ok   image HEALTHCHECK healthy"
+
 if docker logs "$NAME" 2>&1 | grep -q '\[warp\] using'; then
   echo "ok   WARP egress: $(docker logs "$NAME" 2>&1 | grep '\[warp\] using' | tail -n1)"
 else

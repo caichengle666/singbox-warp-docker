@@ -1,6 +1,6 @@
 {
   "log": {
-    "level": "info"
+    "level": "__LOG_LEVEL__"
   },
   "inbounds": [
     {
