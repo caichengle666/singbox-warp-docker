@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="2.5.5"
+SCRIPT_VERSION="2.5.6"
 APP_DIR_DEFAULT="/opt/singbox-warp"
 ACTIVE_INSTANCE_FILE="${ACTIVE_INSTANCE_FILE:-/etc/singbox-warp/active-instance}"
 IMAGE_DEFAULT="ghcr.io/caichengle666/singbox-warp-docker:latest"
@@ -2154,7 +2154,7 @@ check_tunnel_connected() {
   [[ "$DEPLOY_MODE" == "tunnel" ]] || return 0
   local i
   for i in $(seq 1 20); do
-    if docker logs --tail 200 singbox-warp-cloudflared 2>&1 | grep -q 'Registered tunnel connection'; then
+    if docker logs --tail 200 singbox-warp-cloudflared 2>&1 | grep 'Registered tunnel connection' >/dev/null; then
       log "隧道已连接到 Cloudflare"
       probe_tunnel_hostname
       return 0
@@ -2658,7 +2658,7 @@ cmd_diagnose() {
   if [[ "$DEPLOY_MODE" == "tunnel" ]]; then
     if docker inspect singbox-warp-cloudflared --format '{{.State.Running}}' 2>/dev/null | grep -Fxq true; then
       diag_ok "cloudflared 正在运行"
-      if docker logs --tail 200 singbox-warp-cloudflared 2>&1 | grep -q 'Registered tunnel connection'; then
+      if docker logs --tail 200 singbox-warp-cloudflared 2>&1 | grep 'Registered tunnel connection' >/dev/null; then
         diag_ok "隧道已连接到 Cloudflare"
       else
         diag_warn "最近日志里没有看到隧道连接成功；UDP 7844 不通时可把 CF_TUNNEL_PROTOCOL 改为 http2"

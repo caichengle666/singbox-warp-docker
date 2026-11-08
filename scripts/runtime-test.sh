@@ -87,10 +87,10 @@ docker run -d --name "$NAME" --init \
 echo "waiting for sing-box to start"
 for _ in $(seq 1 90); do
   docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true || fail "container exited during startup"
-  docker logs "$NAME" 2>&1 | grep -q 'sing-box started' && break
+  docker logs "$NAME" 2>&1 | grep 'sing-box started' >/dev/null && break
   sleep 2
 done
-docker logs "$NAME" 2>&1 | grep -q 'sing-box started' || fail "sing-box did not start within 180s"
+docker logs "$NAME" 2>&1 | grep 'sing-box started' >/dev/null || fail "sing-box did not start within 180s"
 # Give the startup WARP attempt time to finish before probing.
 for _ in $(seq 1 30); do
   docker logs "$NAME" 2>&1 | grep -Eq '\[warp\] (using|no WARP egress)' && break
@@ -193,7 +193,7 @@ jq -e '.inbounds[] | select(.tag == "mixed-in") | .listen == "0.0.0.0"' <<<"$con
 # Default log level is warn: proxied connections must not log a line each
 # (a scanned port once filled a disk with "inbound connection" lines).
 jq -e '.log.level == "warn"' <<<"$config" >/dev/null || fail "default log level should be warn"
-if docker logs "$NAME" 2>&1 | grep -q 'inbound connection'; then
+if docker logs "$NAME" 2>&1 | grep 'inbound connection' >/dev/null; then
   fail "per-connection INFO lines are logged at the default log level"
 fi
 echo "ok   default log level warn, no per-connection lines"
@@ -208,7 +208,7 @@ health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}
 [ "$health" = healthy ] || fail "image HEALTHCHECK did not report healthy (status: $health)"
 echo "ok   image HEALTHCHECK healthy"
 
-if docker logs "$NAME" 2>&1 | grep -q '\[warp\] using'; then
+if docker logs "$NAME" 2>&1 | grep '\[warp\] using' >/dev/null; then
   echo "ok   WARP egress: $(docker logs "$NAME" 2>&1 | grep '\[warp\] using' | tail -n1)"
 else
   echo "::warning::no WARP egress came up in this environment (runs on direct); protocol checks still passed"
@@ -228,14 +228,14 @@ docker run -d --name "$NAME" --init \
   "$IMAGE" >/dev/null
 for _ in $(seq 1 60); do
   docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true || fail "tunnel mode: container exited during startup"
-  docker logs "$NAME" 2>&1 | grep -q 'sing-box started' && break
+  docker logs "$NAME" 2>&1 | grep 'sing-box started' >/dev/null && break
   sleep 2
 done
-docker logs "$NAME" 2>&1 | grep -q 'sing-box started' || fail "tunnel mode: sing-box did not start"
+docker logs "$NAME" 2>&1 | grep 'sing-box started' >/dev/null || fail "tunnel mode: sing-box did not start"
 config="$(docker exec "$NAME" cat /etc/sing-box/config.json)"
 jq -e '[.inbounds[] | select(.type != "mixed")] | length == 1 and .[0].transport.type == "ws"' <<<"$config" >/dev/null ||
   fail "tunnel mode: expected only the WebSocket inbound"
-docker logs "$NAME" 2>&1 | grep -q 'type=ws&path=' || fail "tunnel mode: client link not printed"
+docker logs "$NAME" 2>&1 | grep 'type=ws&path=' >/dev/null || fail "tunnel mode: client link not printed"
 ok=false
 for _ in 1 2 3; do
   if curl -fsS -o /dev/null --max-time 15 -x socks5h://127.0.0.1:31007 "$TEST_URL"; then ok=true; break; fi
@@ -260,10 +260,10 @@ docker run -d --name "$NAME" --init --network host \
   "$IMAGE" >/dev/null
 for _ in $(seq 1 60); do
   docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null | grep -q true || fail "host network: container exited during startup"
-  docker logs "$NAME" 2>&1 | grep -q 'sing-box started' && break
+  docker logs "$NAME" 2>&1 | grep 'sing-box started' >/dev/null && break
   sleep 2
 done
-docker logs "$NAME" 2>&1 | grep -q 'sing-box started' || fail "host network: sing-box did not start"
+docker logs "$NAME" 2>&1 | grep 'sing-box started' >/dev/null || fail "host network: sing-box did not start"
 config="$(docker exec "$NAME" cat /etc/sing-box/config.json)"
 jq -e '.inbounds[] | select(.tag == "mixed-in") | .listen == "127.0.0.1"' <<<"$config" >/dev/null ||
   fail "host network: mixed-in must listen on 127.0.0.1"
