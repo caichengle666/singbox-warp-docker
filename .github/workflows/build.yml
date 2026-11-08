@@ -74,8 +74,8 @@ jobs:
         id: versions
         run: |
           set -euo pipefail
-          SINGBOX_VERSION=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name | sed 's/^v//')
-          WGCF_VERSION=$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -r .tag_name | sed 's/^v//')
+          SINGBOX_VERSION=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name | sed 's/^v//')
+          WGCF_VERSION=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -r .tag_name | sed 's/^v//')
           echo "singbox=$SINGBOX_VERSION" >> "$GITHUB_OUTPUT"
           echo "wgcf=$WGCF_VERSION" >> "$GITHUB_OUTPUT"
 
@@ -83,7 +83,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.versions.outputs.singbox }}"
-          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${version}/sing-box-${version}-linux-amd64.tar.gz" -o /tmp/sb.tgz
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "https://github.com/SagerNet/sing-box/releases/download/v${version}/sing-box-${version}-linux-amd64.tar.gz" -o /tmp/sb.tgz
           tar -xzf /tmp/sb.tgz -C /tmp
           bash scripts/check-template.sh "/tmp/sing-box-${version}-linux-amd64/sing-box"
 
