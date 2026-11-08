@@ -32,11 +32,20 @@ RUN set -eux; \
       printf '%s\n' "$version" | grep -Eq '^[0-9]+([.][0-9]+)+$' || { echo "Invalid release version: $version"; exit 1; }; \
     done; \
     echo "Building with sing-box v${SINGBOX_VERSION}, wgcf v${WGCF_VERSION}"; \
-    curl -fsSL --retry 15 --retry-all-errors --retry-delay 8 "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${sb_arch}.tar.gz" -o /tmp/sb.tgz; \
+    gh_dl() { \
+      repo="$1"; tag="$2"; name="$3"; out="$4"; \
+      asset="$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "https://api.github.com/repos/${repo}/releases/tags/${tag}" \
+        | jq -er --arg n "$name" '.assets[] | select(.name == $n) | .url')" \
+        && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -H 'Accept: application/octet-stream' "$asset" -o "$out" \
+        && return 0; \
+      echo "API asset download failed for ${repo} ${tag} ${name}, falling back to release URL"; \
+      curl -fsSL --retry 15 --retry-all-errors --retry-delay 8 "https://github.com/${repo}/releases/download/${tag}/${name}" -o "$out"; \
+    }; \
+    gh_dl SagerNet/sing-box "v${SINGBOX_VERSION}" "sing-box-${SINGBOX_VERSION}-linux-${sb_arch}.tar.gz" /tmp/sb.tgz; \
     tar -xzf /tmp/sb.tgz -C /tmp; \
     cp "/tmp/sing-box-${SINGBOX_VERSION}-linux-${sb_arch}/sing-box" /usr/local/bin/sing-box; \
     chmod +x /usr/local/bin/sing-box; \
-    curl -fsSL --retry 15 --retry-all-errors --retry-delay 8 "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_linux_${wgcf_arch}" -o /usr/local/bin/wgcf; \
+    gh_dl ViRb3/wgcf "v${WGCF_VERSION}" "wgcf_${WGCF_VERSION}_linux_${wgcf_arch}" /usr/local/bin/wgcf; \
     chmod +x /usr/local/bin/wgcf; \
     curl -fsSL --retry 15 --retry-all-errors --retry-delay 8 https://get.acme.sh | sh -s email=none@example.com --force; \
     rm -rf /tmp/*

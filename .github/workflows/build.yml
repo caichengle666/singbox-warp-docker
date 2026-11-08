@@ -83,7 +83,12 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.versions.outputs.singbox }}"
-          curl -fsSL --retry 15 --retry-all-errors --retry-delay 8 "https://github.com/SagerNet/sing-box/releases/download/v${version}/sing-box-${version}-linux-amd64.tar.gz" -o /tmp/sb.tgz
+          name="sing-box-${version}-linux-amd64.tar.gz"
+          # The release download URL has been returning intermittent 504s; the API asset endpoint is more reliable.
+          if ! { asset=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/SagerNet/sing-box/releases/tags/v${version}" | jq -er --arg n "$name" '.assets[] | select(.name == $n) | .url') \
+                 && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -H 'Accept: application/octet-stream' "$asset" -o /tmp/sb.tgz; }; then
+            curl -fsSL --retry 15 --retry-all-errors --retry-delay 8 "https://github.com/SagerNet/sing-box/releases/download/v${version}/${name}" -o /tmp/sb.tgz
+          fi
           tar -xzf /tmp/sb.tgz -C /tmp
           bash scripts/check-template.sh "/tmp/sing-box-${version}-linux-amd64/sing-box"
 
